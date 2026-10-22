@@ -112,6 +112,13 @@ public static class TypeEval
     public static object? Union(object? a, object? b) =>
         new TypeValue(Ty.Union([ToTy(a), ToTy(b)]));
 
+    /// <summary>
+    /// Whether <c>v[...]</c> should be read as type parameters (<c>list[int]</c>) rather than as indexing.
+    /// Enum types are excluded: <c>Color[1]</c> is an element lookup.
+    /// </summary>
+    public static bool IsParametrizable(object? v) =>
+        v is TypeValue || v is Builtin b && ConstructorType(b.Name) is not null;
+
     /// <summary>Whether a value is usable as a type operand of <c>|</c>, <c>[]</c> or <c>isinstance</c>.</summary>
     public static bool IsTypeLike(object? v) =>
         v is TypeValue or StarRecordType or StarEnumType || v is Builtin b && ConstructorType(b.Name) is not null;

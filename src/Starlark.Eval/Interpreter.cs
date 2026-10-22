@@ -50,6 +50,17 @@ public sealed class StarFunction : ICallable
     internal object Decl { get; }
 
     internal DefParams Params { get; }
+
+    /// <summary>Annotation per parameter (null where unannotated); null if the function has no annotations at all.</summary>
+    internal Ty?[]? ParamTypes { get; init; }
+
+    internal Ty? ReturnType { get; init; }
+
+    /// <summary>The signature as <c>def(x: int, y) -&gt; str</c>, for diagnostics.</summary>
+    public string Signature =>
+        "def(" + string.Join(", ", Params.Params.Select((p, i) =>
+            p.Ident.Name + (ParamTypes?[i] is { } t ? ": " + t : ""))) + ")" + (ReturnType is { } r ? " -> " + r : "");
+
     internal Stmt? Body { get; }
     internal Expr? LambdaBody { get; }
     internal object?[] Defaults { get; }
@@ -183,8 +194,21 @@ public sealed class Interpreter
                 return Flow.Normal;
 
             case AssignStmt a:
-                Assign(a.Target, EvalExpr(a.Value, f, cm), f, cm);
+            {
+                var value = EvalExpr(a.Value, f, cm);
+                if (a.Type is { } annotation)
+                {
+                    // `x: int = 1` checks the value against the annotation at run time.
+                    var ty = TypeOf(annotation, f, cm);
+                    if (!ty.Matches(value))
+                    {
+                        throw new StarlarkException(
+                            $"Value `{Repr.Of(value)}` of type `{Types.Name(value)}` does not match the type annotation `{ty}` for assignment");
+                    }
+                }
+                Assign(a.Target, value, f, cm);
                 return Flow.Normal;
+            }
 
             case AssignModifyStmt m:
                 AssignModify(m, f, cm);
@@ -406,7 +430,36 @@ public sealed class Interpreter
         var defaults = defs.Params.Select(p => p.Default is null ? Missing.Value : EvalExpr(p.Default, f, cm)).ToArray();
         var locals = new HashSet<string>(parameters.Where(p => p.Name is not null).Select(p => p.Name!.Name));
         if (body is not null) LocalCollector.Collect(body, locals);
-        return new StarFunction(name, decl, defs, body, lambdaBody, defaults, f, locals, this, cm);
+
+        // Annotations are ordinary expressions evaluated when the `def` runs, then compiled to types.
+        var paramTypes = defs.Params.Select(p => p.Type is null ? null : TypeOf(p.Type, f, cm)).ToArray();
+        Ty? returnType = (decl as DefStmt)?.ReturnType is { } rt ? TypeOf(rt, f, cm) : null;
+        // A default that violates its own annotation is an error at definition time, even if never used.
+        for (int i = 0; i < paramTypes.Length; i++)
+        {
+            if (paramTypes[i] is { } pt && defaults[i] is not Missing && !pt.Matches(defaults[i]))
+            {
+                Annotations.Check(pt, defaults[i], "argument", defs.Params[i].Ident.Name);
+            }
+        }
+        return new StarFunction(name, decl, defs, body, lambdaBody, defaults, f, locals, this, cm)
+        {
+            ParamTypes = paramTypes,
+            ReturnType = returnType,
+        };
+    }
+
+    /// <summary>Evaluate an annotation expression and turn the result into a type.</summary>
+    private Ty TypeOf(TypeExpr annotation, Frame f, CodeMap cm)
+    {
+        try
+        {
+            return TypeEval.ToTy(EvalExpr(annotation.Expr, f, cm));
+        }
+        catch (StarlarkException e) when (e.AttachLocation(annotation.Span, cm))
+        {
+            throw;
+        }
     }
 
     internal sealed class Missing
@@ -430,17 +483,53 @@ public sealed class Interpreter
         try
         {
             BindArguments(fn, args, kwargs, frame);
+            CheckParameterTypes(fn, frame);
+            object? result;
             if (fn.LambdaBody is not null)
             {
-                return EvalExpr(fn.LambdaBody, frame, fn.CodeMap);
+                result = EvalExpr(fn.LambdaBody, frame, fn.CodeMap);
             }
-            var flow = ExecStmt(fn.Body!, frame, fn.CodeMap);
-            return flow == Flow.Return ? frame.ReturnValue : null;
+            else
+            {
+                var flow = ExecStmt(fn.Body!, frame, fn.CodeMap);
+                result = flow == Flow.Return ? frame.ReturnValue : null;
+            }
+            if (fn.ReturnType is { } rt && !rt.Matches(result))
+            {
+                Annotations.Check(rt, result, "return type");
+            }
+            return result;
         }
         finally
         {
             _depth--;
             _active.Remove(fn.Decl);
+        }
+    }
+
+    /// <summary>Check each bound argument against its annotation. <c>*args</c> and <c>**kwargs</c> check every element.</summary>
+    private static void CheckParameterTypes(StarFunction fn, Frame frame)
+    {
+        var types = fn.ParamTypes;
+        if (types is null) return;
+        var ps = fn.Params.Params;
+        for (int i = 0; i < ps.Count; i++)
+        {
+            if (types[i] is not { } ty) continue;
+            var value = frame.Vars[ps[i].Ident.Name];
+            string name = ps[i].Ident.Name;
+            switch (ps[i].Kind)
+            {
+                case DefParamKind.Args:
+                    foreach (var x in ((StarTuple)value!).Items) Annotations.Check(ty, x, "argument", name);
+                    break;
+                case DefParamKind.Kwargs:
+                    foreach (var v in ((StarDict)value!).Values) Annotations.Check(ty, v, "argument", name);
+                    break;
+                default:
+                    if (!ty.Matches(value)) Annotations.Check(ty, value, "argument", name);
+                    break;
+            }
         }
     }
 
@@ -563,7 +652,8 @@ public sealed class Interpreter
             case BytesLiteral b:
                 return new StarBytes(b.Value);
             case EllipsisLiteral:
-                throw new StarlarkException("`...` cannot be evaluated");
+                // Only meaningful inside a type, as in `tuple[int, ...]`.
+                return EllipsisMarker.Instance;
 
             case TupleExpr t:
                 return new StarTuple(t.Items.Select(x => EvalExpr(x, f, cm)).ToArray());
@@ -605,9 +695,17 @@ public sealed class Interpreter
                 return Methods.GetAttr(EvalExpr(dot.Target, f, cm), dot.Field.Value);
 
             case IndexExpr ix:
-                return Ops.Index(EvalExpr(ix.Target, f, cm), EvalExpr(ix.Index, f, cm));
+            {
+                var target = EvalExpr(ix.Target, f, cm);
+                var index = EvalExpr(ix.Index, f, cm);
+                return TypeEval.IsParametrizable(target) ? TypeEval.Parametrize(target, index) : Ops.Index(target, index);
+            }
             case Index2Expr ix2:
-                return Ops.Index(EvalExpr(ix2.Target, f, cm), new StarTuple([EvalExpr(ix2.First, f, cm), EvalExpr(ix2.Second, f, cm)]));
+            {
+                var target = EvalExpr(ix2.Target, f, cm);
+                var pair = new StarTuple([EvalExpr(ix2.First, f, cm), EvalExpr(ix2.Second, f, cm)]);
+                return TypeEval.IsParametrizable(target) ? TypeEval.Parametrize(target, pair) : Ops.Index(target, pair);
+            }
 
             case SliceExpr sl:
                 return Ops.Slice(

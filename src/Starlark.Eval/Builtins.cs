@@ -158,6 +158,71 @@ public static class Builtins
             int n = lists.Count == 0 ? 0 : lists.Min(l => l.Count);
             return new StarList(Enumerable.Range(0, n).Select(i => (object?)new StarTuple(lists.Select(l => l[i]).ToArray())));
         });
+
+        InstallTypeSystem(u);
+    }
+
+    // ---------------------------------------------------------------- types, records, enums, structs
+
+    private static void InstallTypeSystem(Dictionary<string, object?> u)
+    {
+        Add(u, "isinstance", (_, a) =>
+        {
+            var value = a.Required("value");
+            var ty = TypeEval.ToTy(a.Required("type"));
+            return ty.Matches(value);
+        });
+
+        // eval_type(T) turns a type expression into a first-class type value that can be matched and printed.
+        Add(u, "eval_type", (_, a) => new TypeValue(TypeEval.ToTy(a.Required("type"))));
+
+        Add(u, "field", (_, a) =>
+        {
+            var ty = TypeEval.ToTy(a.Required("type"));
+            bool has = a.Has("default");
+            var dflt = a.Optional("default");
+            if (has && !ty.Matches(dflt))
+            {
+                throw new StarlarkException(
+                    $"Default value `{Repr.Of(dflt)}` of type `{Types.Name(dflt)}` does not match the field type `{ty}`");
+            }
+            return new FieldSpec(ty, dflt, has);
+        });
+
+        u["record"] = new Builtin("record", (_, a, k) =>
+        {
+            if (a.Count > 0) throw new StarlarkException("record() takes only named arguments");
+            var fields = new List<RecordField>();
+            foreach (var (name, spec) in k)
+            {
+                if (spec is FieldSpec fs)
+                {
+                    fields.Add(new RecordField(name, fs.Type, fs.Default, fs.HasDefault));
+                }
+                else
+                {
+                    fields.Add(new RecordField(name, TypeEval.ToTy(spec), null, false));
+                }
+            }
+            return new StarRecordType(fields);
+        });
+
+        u["enum"] = new Builtin("enum", (_, a, k) =>
+        {
+            if (k.Count > 0) throw new StarlarkException("enum() takes only positional arguments");
+            var seen = new StarSet();
+            foreach (var x in a)
+            {
+                if (!seen.Add(x)) throw new StarlarkException($"Duplicate enum value {Repr.Of(x)}");
+            }
+            return new StarEnumType(a.ToList());
+        });
+
+        u["struct"] = new Builtin("struct", (_, a, k) =>
+        {
+            if (a.Count > 0) throw new StarlarkException("struct() takes only named arguments");
+            return new StarStruct(k);
+        });
     }
 
     private static byte ByteOf(object? x)

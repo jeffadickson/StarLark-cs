@@ -67,6 +67,14 @@ public static class Ops
                     if (!y.TryGet(kv.Key, out var yv) || !Equal(kv.Value, yv)) return false;
                 }
                 return true;
+            case (StarStruct x, StarStruct y):
+                // Equal when they have the same fields with equal values; field order does not matter.
+                return x.Fields.Count == y.Fields.Count &&
+                       x.Fields.All(kv => y.TryGet(kv.Key, out var yv) && Equal(kv.Value, yv));
+            case (StarRecord x, StarRecord y):
+                return ReferenceEquals(x.Type, y.Type) && SeqEqual(x.Values, y.Values);
+            case (StarEnumValue x, StarEnumValue y):
+                return ReferenceEquals(x.Type, y.Type) && x.Index == y.Index;
             case (StarSet x, StarSet y):
                 return x.Count == y.Count && x.Items.All(y.Contains);
             case (StarRange x, StarRange y):
@@ -154,6 +162,12 @@ public static class Ops
                 throw Err.Unsupported("&", a, b);
             case BinOp.BitOr:
                 if (a is BigInteger x2 && b is BigInteger y2) return x2 | y2;
+                // `int | str`, `list[int] | None`: combining types.
+                if ((TypeEval.IsTypeLike(a) && (TypeEval.IsTypeLike(b) || b is null)) ||
+                    (a is null && TypeEval.IsTypeLike(b)))
+                {
+                    return TypeEval.Union(a, b);
+                }
                 if (a is StarDict d1 && b is StarDict d2)
                 {
                     var r = new StarDict();
@@ -353,6 +367,7 @@ public static class Ops
             case StarSet s: return IterLocked(s, () => s.Items.ToList());
             case StarRange r: return IterateRange(r);
             case StarElems e: return e.Items;
+            case StarEnumType et: return et.Instances.Cast<object?>().ToList();
         }
         throw Err.NotIterable(v);
     }
@@ -389,6 +404,7 @@ public static class Ops
         StarTuple t => t.Items.Length,
         StarDict d => d.Count,
         StarSet s => s.Count,
+        StarEnumType et => et.Instances.Count,
         StarRange r => r.Count,
         _ => throw new StarlarkException($"Type '{Types.Name(v)}' has no len()"),
     };
@@ -409,6 +425,11 @@ public static class Ops
         {
             if (d.TryGet(index, out var v)) return v;
             throw new StarlarkException($"Key `{Repr.Of(index)}` not found in dictionary");
+        }
+        if (target is StarEnumType et)
+        {
+            if (index is not BigInteger ei) throw Err.BadIndex("index", index);
+            return et.Instances[NormIndex(ei, et.Instances.Count)];
         }
         if (target is not (StarList or StarTuple or string or StarBytes or StarRange))
         {

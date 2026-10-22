@@ -35,6 +35,8 @@ public static class Methods
     {
         StarStruct s => s.Fields.Select(f => f.Key),
         StarRecord r => r.Type.Fields.Select(f => f.Name),
+        StarEnumValue => ["index", "value"],
+        StarEnumType => ["values"],
         _ => (IEnumerable<string>?)TableFor(v)?.Keys ?? [],
     };
 
@@ -48,6 +50,18 @@ public static class Methods
 
         if (target is StarRecord rec && rec.TryGet(name, out value))
         {
+            return true;
+        }
+
+        if (target is StarEnumValue ev && (name == "value" || name == "index"))
+        {
+            value = name == "value" ? ev.Value : new BigInteger(ev.Index);
+            return true;
+        }
+
+        if (target is StarEnumType et && name == "values")
+        {
+            value = new Builtin("values", (_, a, k) => new StarList(et.Values));
             return true;
         }
 

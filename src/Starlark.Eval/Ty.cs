@@ -119,7 +119,7 @@ public abstract record Ty
 
     // ---------------------------------------------------------------- display
 
-    public override string ToString() => Display(this);
+    public sealed override string ToString() => Display(this);
 
     private static string Display(Ty t) => t switch
     {
