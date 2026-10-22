@@ -77,13 +77,14 @@ public class ConformanceTests
             .Select(c => new object[] { $"{c.File}:{c.Line}", c });
 
     /// <summary>Runs one chunk and returns what the reference harness would see on stdout+stderr.</summary>
-    public static string Run(string code)
+    public static string Run(string code, StringElements elements = StringElements.Utf16)
     {
         var output = new List<string>();
         var it = new Interpreter
         {
             Dialect = Dialect.AllOptionsInternal with { EnableTypes = DialectTypes.Disable },
             Print = output.Add,
+            StringElements = elements,
         };
         try
         {

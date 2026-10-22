@@ -383,7 +383,7 @@ public static class Ops
 
     public static BigInteger Len(object? v) => v switch
     {
-        string s => s.Length,
+        string s => Strings.Len(s),
         StarBytes b => b.Value.Length,
         StarList l => l.Count,
         StarTuple t => t.Items.Length,
@@ -422,7 +422,7 @@ public static class Ops
         {
             case StarList l: return l[NormIndex(i, l.Count)];
             case StarTuple t: return t.Items[NormIndex(i, t.Items.Length)];
-            case string s: return s[NormIndex(i, s.Length)].ToString();
+            case string s: return Strings.At(s, NormIndex(i, Strings.Len(s)));
             case StarBytes b: return new BigInteger(b.Value[NormIndex(i, b.Value.Length)]);
             case StarRange r:
             {
@@ -496,7 +496,7 @@ public static class Ops
             case StarTuple t:
                 return new StarTuple(SliceIndices(t.Items.Length, start, stop, step).Select(i => t.Items[i]).ToArray());
             case string s:
-                return new string(SliceIndices(s.Length, start, stop, step).Select(i => s[i]).ToArray());
+                return Strings.Pick(s, SliceIndices(Strings.Len(s), start, stop, step));
             case StarBytes b:
                 return new StarBytes(SliceIndices(b.Value.Length, start, stop, step).Select(i => b.Value[i]).ToArray());
             case StarRange r:

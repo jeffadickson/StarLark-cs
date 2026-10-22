@@ -98,6 +98,12 @@ public sealed class Interpreter
     public Dialect Dialect { get; set; } = Dialect.Standard;
 
     /// <summary>
+    /// The unit of string length, indexing and slicing. <see cref="StringElements.Utf16"/> (default) matches .NET
+    /// strings; <see cref="StringElements.Utf8"/> matches the Go and Rust implementations, so offsets agree with them.
+    /// </summary>
+    public StringElements StringElements { get; set; } = StringElements.Utf16;
+
+    /// <summary>
     /// The spec makes rebinding a global a static error. Set this to allow it, as some implementations
     /// (and tests that reuse names) do.
     /// </summary>
@@ -127,7 +133,10 @@ public sealed class Interpreter
     {
         var names = Resolver.Resolve(ast, _universe.ContainsKey, AllowGlobalReassign);
         var frame = new Frame(null, names, isModule: true);
-        ExecStmt(ast.Statement, frame, ast.CodeMap);
+        using (Strings.Enter(StringElements))
+        {
+            ExecStmt(ast.Statement, frame, ast.CodeMap);
+        }
         foreach (var v in frame.Vars.Values) Freezer.Freeze(v);
         return new Module(frame.Vars);
     }
@@ -139,6 +148,7 @@ public sealed class Interpreter
         var names = Resolver.Resolve(ast, _universe.ContainsKey, allowGlobalReassign: true);
         var frame = new Frame(null, names, isModule: true);
         var assign = (AssignStmt)ast.Statement;
+        using var _ = Strings.Enter(StringElements);
         return EvalExpr(assign.Value, frame, ast.CodeMap);
     }
 
@@ -518,6 +528,7 @@ public sealed class Interpreter
     {
         if (callee is ICallable c)
         {
+            using var _ = Strings.Enter(StringElements);
             return c.Call(this, args, kwargs ?? []);
         }
         throw new StarlarkException($"Operation `call()` not supported on type '{Types.Name(callee)}': not callable");

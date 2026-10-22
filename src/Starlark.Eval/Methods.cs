@@ -167,18 +167,9 @@ public static class Methods
         {
             var s = (string)self;
             var sub = StrArg(a, "sub");
-            var (st, en) = Bounds(a, s.Length);
+            var (st, en) = Bounds(a, Strings.Len(s));
             a.Done();
-            if (st > en) return BigInteger.Zero;
-            string region = s[st..en];
-            if (sub.Length == 0) return new BigInteger(region.Length + 1);
-            int n = 0, pos = 0;
-            while ((pos = region.IndexOf(sub, pos, StringComparison.Ordinal)) >= 0)
-            {
-                n++;
-                pos += sub.Length;
-            }
-            return new BigInteger(n);
+            return new BigInteger(Strings.CountIn(s, sub, st, en));
         };
 
         m["replace"] = (_, self, a) =>
@@ -275,10 +266,9 @@ public static class Methods
     private static object StartsEnds(string s, ArgReader a, bool starts)
     {
         var arg = a.Required(starts ? "prefix" : "suffix");
-        var (st, en) = Bounds(a, s.Length);
+        var (st, en) = Bounds(a, Strings.Len(s));
         a.Done();
-        string region = st <= en ? s[st..en] : "";
-        bool Test(string p) => starts ? region.StartsWith(p, StringComparison.Ordinal) : region.EndsWith(p, StringComparison.Ordinal);
+        bool Test(string p) => Strings.HasAffix(s, p, st, en, starts);
         switch (arg)
         {
             case string p: return Test(p);
@@ -299,20 +289,15 @@ public static class Methods
     private static object Find(string s, ArgReader a, bool last, bool mustExist)
     {
         var sub = StrArg(a, "sub");
-        var (st, en) = Bounds(a, s.Length);
+        var (st, en) = Bounds(a, Strings.Len(s));
         a.Done();
-        int idx = -1;
-        if (st <= en)
-        {
-            string region = s[st..en];
-            idx = last ? region.LastIndexOf(sub, StringComparison.Ordinal) : region.IndexOf(sub, StringComparison.Ordinal);
-        }
+        int idx = Strings.Search(s, sub, st, en, last, out _);
         if (idx < 0)
         {
             if (mustExist) throw new StarlarkException($"Substring \"{sub}\" not found in \"{s}\"");
             return new BigInteger(-1);
         }
-        return new BigInteger(st + idx);
+        return new BigInteger(idx);
     }
 
     private static object Partition(string s, ArgReader a, bool last)
