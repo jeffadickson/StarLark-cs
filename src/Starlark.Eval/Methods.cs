@@ -31,10 +31,26 @@ public static class Methods
         _ => null,
     };
 
-    public static IEnumerable<string> Names(object? v) => (IEnumerable<string>?)TableFor(v)?.Keys ?? [];
+    public static IEnumerable<string> Names(object? v) => v switch
+    {
+        StarStruct s => s.Fields.Select(f => f.Key),
+        StarRecord r => r.Type.Fields.Select(f => f.Name),
+        _ => (IEnumerable<string>?)TableFor(v)?.Keys ?? [],
+    };
 
     public static bool TryGetAttr(object? target, string name, out object? value)
     {
+        // Namespaces such as `json` and `typing` are structs, and user-defined records carry named fields: both expose them as attributes.
+        if (target is StarStruct st && st.TryGet(name, out value))
+        {
+            return true;
+        }
+
+        if (target is StarRecord rec && rec.TryGet(name, out value))
+        {
+            return true;
+        }
+
         if (TableFor(target) is { } t && t.TryGetValue(name, out var m))
         {
             value = new BoundMethod(name, target!, m);

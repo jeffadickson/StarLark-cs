@@ -47,6 +47,8 @@ public static class Builtins
         });
 
         u["dict"] = new Builtin("dict", MakeDict);
+        u["json"] = JsonModule.Create();
+        u["typing"] = TypingModule.Create();
 
         Add(u, "dir", (_, a) => new StarList(Methods.Names(a.Required("x")).OrderBy(x => x, StringComparer.Ordinal).Select(x => (object?)x)));
 

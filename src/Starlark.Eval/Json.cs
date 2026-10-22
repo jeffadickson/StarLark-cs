@@ -314,8 +314,27 @@ public static class JsonModule
                         {
                             throw Error("invalid \\u escape");
                         }
-                        sb.Append((char)cu);
                         _pos += 4;
+                        if (char.IsHighSurrogate((char)cu))
+                        {
+                            // A high surrogate must be followed by \u and a low surrogate; together they are one code point.
+                            if (_pos + 6 > text.Length || text[_pos] != '\\' || text[_pos + 1] != 'u' ||
+                                !int.TryParse(text.AsSpan(_pos + 2, 4), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int low) ||
+                                !char.IsLowSurrogate((char)low))
+                            {
+                                throw Error("unpaired surrogate in \\u escape");
+                            }
+                            sb.Append((char)cu).Append((char)low);
+                            _pos += 6;
+                        }
+                        else if (char.IsLowSurrogate((char)cu))
+                        {
+                            throw Error("unpaired surrogate in \\u escape");
+                        }
+                        else
+                        {
+                            sb.Append((char)cu);
+                        }
                         break;
                     default: throw Error($"invalid escape '\\{e}'");
                 }

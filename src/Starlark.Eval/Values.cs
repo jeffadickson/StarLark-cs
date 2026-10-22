@@ -285,6 +285,12 @@ public static class Freezer
             case StarFunction f:
                 f.FreezeContents();
                 break;
+            case StarStruct st:
+                st.Freeze();
+                break;
+            case StarRecord rec:
+                rec.Freeze();
+                break;
         }
     }
 }
@@ -413,6 +419,9 @@ public static class Types
         StarRange => "range",
         StarElems e => e.TypeName,
         ICallable f => f.TypeName,
+        StarStruct => "struct",
+        StarRecord r => r.Type.Name,
+        StarEnumValue e => e.Type.Name,
         _ => v.GetType().Name,
     };
 
@@ -516,6 +525,9 @@ public static class Repr
         BoundMethod m => $"<built-in method {m.Name} of {Types.Name(m.Receiver)} value>",
         Builtin f => $"<built-in function {f.Name}>",
         ICallable f => $"<function {f.Name}>",
+        StarStruct st => "struct(" + string.Join(", ", st.Fields.Select(kv => $"{kv.Key} = {Of(kv.Value)}")) + ")",
+        StarRecord rec => rec.Type.Name + "(" + string.Join(", ", rec.Type.Fields.Select((fld, i) => $"{fld.Name}={Of(rec.Values[i])}")) + ")",
+        StarEnumValue ev => ev.Type.Name + "(" + Of(ev.Value) + ")",
         _ => v.ToString() ?? "",
     };
 }
