@@ -816,6 +816,21 @@ public sealed class Lexer
     /// <summary>Lex f-string text between <c>{}</c> (or from the start to the first <c>{</c>, or the end).</summary>
     private Lexeme? LexFStringContent()
     {
+        var result = LexFStringContentInner();
+        if (result is { IsError: true })
+        {
+            // An error leaves the cursor where it was. Abandon the f-string and everything after the error:
+            // otherwise the next call would hit the same input, report the same error, and never terminate.
+            _fstrings.Clear();
+            _done = true;
+            _buffer.Clear();
+            _raw.Bump(_codemap.Source.Length - _raw.TokEnd);
+        }
+        return result;
+    }
+
+    private Lexeme? LexFStringContentInner()
+    {
         if (_fstrings.Count == 0)
         {
             return null;

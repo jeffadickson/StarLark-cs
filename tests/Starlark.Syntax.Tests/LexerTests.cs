@@ -5,6 +5,30 @@ namespace Starlark.Syntax.Tests;
 
 public class LexerTests
 {
+    /// <summary>
+    /// Found by fuzzing: an error inside an f-string left the lexer where it started, so it reported the same
+    /// error forever and <see cref="Lexer.LexAll"/> never returned. Every one of these must terminate.
+    /// </summary>
+    [Theory]
+    [InlineData("f'")]
+    [InlineData("f\"")]
+    [InlineData("f'x")]
+    [InlineData("f'{x}")]
+    [InlineData("f'a\\")]
+    [InlineData("f'\n")]
+    [InlineData("fr'\\")]
+    [InlineData("f'}")]
+    [InlineData("f'''")]
+    [InlineData("f'\ud800")]
+    [InlineData("x = f'abc\ny = 1\n")]
+    public void UnterminatedFStringsTerminateWithAnError(string source)
+    {
+        var task = Task.Run(() => Lexer.LexAll(new CodeMap("t", source)));
+        Assert.True(task.Wait(TimeSpan.FromSeconds(5)), $"lexer did not terminate for {source.Replace("\n", "\\n")}");
+        Assert.Contains(task.Result, l => l.IsError);
+        Assert.Equal(1, task.Result.Count(l => l.IsError));
+    }
+
     [Fact]
     public void IsValidIdentifier()
     {
