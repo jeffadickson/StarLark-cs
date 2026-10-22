@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Starlark.Eval/Starlark.Eval.csproj" />
+    <Project Path="src/Starlark.Syntax/Starlark.Syntax.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Starlark.Eval.Tests/Starlark.Eval.Tests.csproj" />
+    <Project Path="tests/Starlark.Syntax.Tests/Starlark.Syntax.Tests.csproj" />
+  </Folder>
+</Solution>
