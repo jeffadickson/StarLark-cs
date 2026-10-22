@@ -110,10 +110,12 @@ public class EvalTests
     public void Strings(string expr, string expected) => Assert.Equal(expected, R(Eval(expr)));
 
     [Fact]
-    public void StringsAreCodePointSequences()
+    public void StringsAreSequencesOfUtf16Elements()
     {
-        Assert.Equal("1", R(Eval("len('😀')")));
-        Assert.Equal("\"😀\"", R(Eval("'a😀b'[1]")));
+        // The spec lets an implementation choose K = 8 or K = 16; this one uses 16-bit elements (like Java).
+        Assert.Equal("1", R(Eval("len('é')")));
+        Assert.Equal("2", R(Eval("len('😀')")));
+        Assert.Equal("\"b\"", R(Eval("'a😀b'[3]")));
     }
 
     [Fact]
@@ -142,11 +144,157 @@ public class EvalTests
 
     [Fact]
     public void AugmentedAssignmentOnListMutatesInPlace() =>
-        Assert.Equal("[1, 2, 3]", R(Run("a = [1]\nb = a\na += [2, 3]\nresult = b\n")));
+        Assert.Equal("[1, 2, 3]", R(Run(
+            "def f():\n  a = [1]\n  b = a\n  a += [2, 3]\n  return b\nresult = f()\n")));
 
     [Fact]
     public void ListPlusIsNewList() =>
-        Assert.Equal("[1]", R(Run("a = [1]\nb = a\na = a + [2]\nresult = b\n")));
+        Assert.Equal("[1]", R(Run(
+            "def f():\n  a = [1]\n  b = a\n  a = a + [2]\n  return b\nresult = f()\n")));
+
+    [Fact]
+    public void AugmentedAssignmentToGlobalIsStaticError() =>
+        Assert.Contains("augmented assignment on global", Fails("a = [1]\na += [2]\n").RawMessage);
+
+    [Fact]
+    public void ReassigningGlobalIsStaticError() =>
+        Assert.Contains("cannot reassign global `x` declared on line 1", Fails("x = 1\nx = 2\n").RawMessage);
+
+    [Fact]
+    public void UndefinedNameIsStaticErrorEvenInUnexecutedCode() =>
+        Assert.Contains("`g` not found", Fails("def f():\n  if False:\n    g()\n").RawMessage);
+
+    [Fact]
+    public void LoadCannotBindExistingGlobal()
+    {
+        var it = New();
+        it.SourceLoader = _ => "x = 1\n";
+        Assert.Throws<StarlarkException>(() => it.Execute("t", "x = 2\nload('m', 'x')\n"));
+    }
+
+    [Fact]
+    public void SetOperations()
+    {
+        Assert.Equal("set([1, 2, 3])", R(Eval("set([1, 2]) | set([3, 2])")));
+        Assert.Equal("set([2])", R(Eval("set([1, 2]) & set([2, 3])")));
+        Assert.Equal("set([1])", R(Eval("set([1, 2]) - set([2, 3])")));
+        Assert.Equal("set([1, 3])", R(Eval("set([1, 2]) ^ set([2, 3])")));
+        Assert.Equal("set()", R(Eval("set()")));
+        Assert.Equal("True", R(Eval("set([1, 2]) == set([2, 1])")));
+        Assert.Equal("True", R(Eval("set() != []")));
+        Assert.Equal("[3, 1, 2]", R(Eval("list(set([3, 1, 1, 2]))")));
+        Assert.Equal("set([1, 2, 3, 4])", R(Eval("set([1, 2]).union([2, 3], {3: 'a', 4: 'b'})")));
+        Assert.Equal("set([2])", R(Eval("set([1, 2, 3]).difference([0, 1], [3, 4])")));
+        Assert.Equal("set([1])", R(Eval("set([1, 2, 3]).intersection([0, 1], [1, 2])")));
+        Assert.Equal("True", R(Eval("set([1]).issubset([1, 2])")));
+        Assert.Equal("True", R(Eval("set([1, 2]).isdisjoint([3])")));
+        Assert.Throws<StarlarkException>(() => Eval("set([1]) < set([2])"));
+        Assert.Throws<StarlarkException>(() => Eval("set([[1]])"));
+    }
+
+    [Fact]
+    public void SetMutationInFunction() =>
+        Assert.Equal("[2, 4]", R(Run(
+            "def f():\n  s = set([1, 2])\n  s |= set([2, 3, 4])\n  s &= set([0, 2, 3, 4])\n  s -= set([0, 3])\n  return list(s)\nresult = f()\n")));
+
+    [Fact]
+    public void FloatSemantics()
+    {
+        Assert.Equal("True", R(Eval("float('nan') == float('nan')")));
+        Assert.Equal("True", R(Eval("float('inf') < float('nan')")));
+        Assert.Equal("True", R(Eval("0.0 == -0.0")));
+        Assert.Equal("False", R(Eval("(1 << 53) + 1 == ((1 << 53) + 1) + 0.0")));
+        Assert.Equal("1.2345678e+07", Repr.Str(Eval("12345678.0")));
+        Assert.Equal("0.00001", Repr.Str(Eval("1e-5")));
+        Assert.Equal("9e-06", Repr.Str(Eval("9e-6")));
+        Assert.Equal("1e+06", Repr.Str(Eval("1e6")));
+        Assert.Equal("100000.0", Repr.Str(Eval("1e5")));
+        Assert.Equal("1.0", Repr.Str(Eval("1.0")));
+        Assert.Equal("+inf", Repr.Str(Eval("float('+Infinity')")));
+        Assert.Throws<StarlarkException>(() => Eval("1.0 // 0.0"));
+    }
+
+    [Fact]
+    public void PercentFormatting()
+    {
+        Assert.Equal("\"1.230000e+12\"", R(Eval("'%e' % 1.23e12")));
+        Assert.Equal("\"1230000000000.000000\"", R(Eval("'%f' % 1.23e12")));
+        Assert.Equal("\"1.5\"", R(Eval("'%g' % 1.5")));
+        Assert.Equal("\"1e+45\"", R(Eval("'%g' % 1e45")));
+        Assert.Equal("\"ff FF 17\"", R(Eval("'%x %X %o' % (255, 255, 15)")));
+        Assert.Equal("\"3\"", R(Eval("'%d' % 3.9")));
+        Assert.Equal("\"A 123 hi Z\"", R(Eval("'A %(foo)d %(bar)s Z' % {'foo': 123, 'bar': 'hi'}")));
+        Assert.Equal("\"(40, -74)\"", R(Eval("'%s' % ((40, -74),)")));
+        Assert.Throws<StarlarkException>(() => Eval("'%s' % (40, -74)"));
+        Assert.Throws<StarlarkException>(() => Eval("'%d' % True"));
+        Assert.Throws<StarlarkException>(() => Eval("'%d' % 'x'"));
+    }
+
+    [Fact]
+    public void StringMethodSpecExamples()
+    {
+        Assert.Equal("\"a2b3c1\"", R(Eval("'a{x}b{y}c{}'.format(1, x=2, y=3)")));
+        Assert.Equal("[\"one two\", \"three\"]", R(Eval("'one two  three'.rsplit(None, 1)")));
+        Assert.Equal("[\"one\", \"two  three\"]", R(Eval("'one two  three'.split(None, 1)")));
+        Assert.Equal("[\"one\", \"two\", \"\", \"three\"]", R(Eval("'one two  three'.split(' ')")));
+        Assert.Equal("[\"\"]", R(Eval("''.split('o')")));
+        Assert.Equal("[]", R(Eval("'   '.split()")));
+        Assert.Equal("\"ello  \"", R(Eval("'   hello  '.lstrip('h o')")));
+        Assert.Equal("-1", R(Eval("'bonbon'.find('on', 2, 5)")));
+        Assert.Equal("1", R(Eval("'bonbon'.rfind('on', None, 5)")));
+        Assert.Equal("True", R(Eval("'Catch-22'.istitle()")));
+        Assert.Equal("False", R(Eval("'HAL-9000'.istitle()")));
+        Assert.Equal("\"Hello, World!\"", R(Eval("'hElLo, WoRlD!'.title()")));
+        Assert.Equal("\"catamaran\"", R(Eval("'a'.join('ctmrn'.elems())")));
+        Assert.Equal("\"string.elems\"", R(Eval("type('abc'.elems())")));
+        Assert.Equal("[\"A\", \"B\", \"C\", \"D\"]", R(Eval("'A\\nB\\rC\\r\\nD'.splitlines()")));
+        Assert.Equal("\"ban\"", R(Eval("'banana'.removesuffix('ana')")));
+    }
+
+    [Fact]
+    public void BytesBehaviour()
+    {
+        Assert.Equal("b\"ABC\"", R(Eval("bytes([65, 66, 67])")));
+        Assert.Equal("[65, 66, 67]", R(Eval("list(b'ABC'.elems())")));
+        Assert.Equal("\"bytes.elems\"", R(Eval("type(b'ABC'.elems())")));
+        Assert.Equal("True", R(Eval("97 in b'abc'")));
+        Assert.Equal("True", R(Eval("b'nasty' in b'dynasty'")));
+        Assert.Equal("65", R(Eval("b'ABC'[0]")));
+        Assert.Equal("b\"BC\"", R(Eval("b'ABC'[1:]")));
+        Assert.Equal("\"ABC\"", R(Eval("str(b'ABC')")));
+        Assert.Throws<StarlarkException>(() => Eval("bytes(65)"));
+        Assert.Throws<StarlarkException>(() => Eval("bytes([256])"));
+    }
+
+    [Fact]
+    public void HashFollowsSpec()
+    {
+        Assert.Equal("99162322", R(Eval("hash('hello')")));
+        Assert.Equal("113318802", R(Eval("hash('world')")));
+        Assert.Throws<StarlarkException>(() => Eval("hash(1)"));
+    }
+
+    [Fact]
+    public void RangeBehaviour()
+    {
+        Assert.Equal("range(10)".Replace("range(10)", "range(0, 10)"), Repr.Of(Eval("range(10)")));
+        Assert.Equal("True", R(Eval("range(0, 10, 2) == range(0, 9, 2)")));
+        Assert.Equal("True", R(Eval("4 in range(0, 10, 2)")));
+        Assert.Equal("False", R(Eval("5 in range(0, 10, 2)")));
+        Assert.Equal("[4, 3, 2, 1, 0]", R(Eval("reversed(range(5))")));
+        Assert.Equal("2", R(Eval("range(10)[-8]")));
+        Assert.Throws<StarlarkException>(() => Eval("{range(3): 1}"));
+    }
+
+    [Fact]
+    public void FrozenFunctionDefaultsBecomeImmutable()
+    {
+        var it = New();
+        var m = it.Execute("t", "def f(x=[]):\n  return x\n");
+        var f = (ICallable)m.Globals["f"]!;
+        var dflt = (StarList)it.CallValue(f, [])!;
+        Assert.True(dflt.Frozen);
+    }
 
     [Fact]
     public void DictOperations()
@@ -184,7 +332,7 @@ public class EvalTests
         Assert.Equal("3", R(Run("a, b = 1, 2\nresult = a + b\n")));
         Assert.Equal("2", R(Run("[a, (b, c)] = [1, (2, 3)]\nresult = b\n")));
         Assert.Contains("Too many values", Fails("a, b = [1, 2, 3]").RawMessage);
-        Assert.Contains("Not enough values", Fails("a, b, c = [1, 2]").RawMessage);
+        Assert.Contains("Too few values", Fails("a, b, c = [1, 2]").RawMessage);
     }
 
     [Fact]
@@ -260,7 +408,7 @@ public class EvalTests
 
     [Fact]
     public void RecursionIsRejected() =>
-        Assert.Contains("call depth", Fails("def f(n):\n  return f(n + 1)\nf(0)\n").RawMessage);
+        Assert.Contains("recursively", Fails("def f(n):\n  return f(n + 1)\nf(0)\n").RawMessage);
 
     [Fact]
     public void ComprehensionsHaveOwnScope() =>
@@ -336,7 +484,8 @@ public class EvalTests
     [InlineData("type(1.0)", "\"float\"")]
     [InlineData("type(None)", "\"NoneType\"")]
     [InlineData("type([])", "\"list\"")]
-    [InlineData("type(len)", "\"function\"")]
+    [InlineData("type(len)", "\"builtin_function_or_method\"")]
+    [InlineData("type(lambda: 1)", "\"function\"")]
     [InlineData("str(1)", "\"1\"")]
     [InlineData("str('a')", "\"a\"")]
     [InlineData("repr('a')", "\"\\\"a\\\"\"")]

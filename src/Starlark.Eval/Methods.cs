@@ -1,36 +1,43 @@
-using System.Globalization;
 using System.Numerics;
 using System.Text;
 
 namespace Starlark.Eval;
 
-using Args = IReadOnlyList<object?>;
-using Kwargs = IReadOnlyList<KeyValuePair<string, object?>>;
-
-/// <summary>Methods on the built-in types: strings, lists, dicts, bytes.</summary>
+/// <summary>The method tables for the built-in types, as listed in the spec's "Built-in methods" section.</summary>
 public static class Methods
 {
-    private static readonly Dictionary<string, string[]> Table = new()
+    private static readonly Dictionary<string, Method> StringMethods = new();
+    private static readonly Dictionary<string, Method> BytesMethods = new();
+    private static readonly Dictionary<string, Method> ListMethods = new();
+    private static readonly Dictionary<string, Method> DictMethods = new();
+    private static readonly Dictionary<string, Method> SetMethods = new();
+
+    static Methods()
     {
-        ["string"] =
-        [
-            "capitalize", "codepoints", "count", "elems", "endswith", "find", "format", "index", "isalnum", "isalpha",
-            "isdigit", "islower", "isspace", "istitle", "isupper", "join", "lower", "lstrip", "partition", "removeprefix",
-            "removesuffix", "replace", "rfind", "rindex", "rpartition", "rsplit", "rstrip", "split", "splitlines",
-            "startswith", "strip", "title", "upper",
-        ],
-        ["list"] = ["append", "clear", "extend", "index", "insert", "pop", "remove"],
-        ["dict"] = ["clear", "get", "items", "keys", "pop", "popitem", "setdefault", "update", "values"],
-        ["bytes"] = ["elems"],
+        RegisterStrings();
+        RegisterBytes();
+        RegisterLists();
+        RegisterDicts();
+        RegisterSets();
+    }
+
+    private static Dictionary<string, Method>? TableFor(object? v) => v switch
+    {
+        string => StringMethods,
+        StarBytes => BytesMethods,
+        StarList => ListMethods,
+        StarDict => DictMethods,
+        StarSet => SetMethods,
+        _ => null,
     };
 
-    public static IEnumerable<string> Names(object? v) => Table.TryGetValue(Types.Name(v), out var n) ? n : [];
+    public static IEnumerable<string> Names(object? v) => (IEnumerable<string>?)TableFor(v)?.Keys ?? [];
 
     public static bool TryGetAttr(object? target, string name, out object? value)
     {
-        if (Names(target).Contains(name))
+        if (TableFor(target) is { } t && t.TryGetValue(name, out var m))
         {
-            value = Bind(target, name);
+            value = new BoundMethod(name, target!, m);
             return true;
         }
         value = null;
@@ -40,257 +47,303 @@ public static class Methods
     public static object? GetAttr(object? target, string name)
     {
         if (TryGetAttr(target, name, out var v)) return v;
-        throw new StarlarkException($"Object of type '{Types.Name(target)}' has no attribute `{name}`");
+        throw new StarlarkException($"Object of type '{Types.Name(target)}' has no attribute `{name}`: no field or method named `{name}`");
     }
 
-    private static object Bind(object? self, string name) =>
-        new Builtin(name, (it, a, k) => Call(it, self, name, a, k));
+    // ---------------------------------------------------------------- helpers
 
-    private static StarlarkException Arity(string fn, string expected) => new($"`{fn}` expects {expected}");
+    private static string StrArg(ArgReader a, string name) => a.Str(name);
 
-    private static string S(object? v, string fn) =>
-        v is string s ? s : throw new StarlarkException($"Expected string argument to `{fn}`, got '{Types.Name(v)}'");
-
-    private static int I(object? v, string fn) =>
-        v is BigInteger i ? (int)i : throw new StarlarkException($"Expected int argument to `{fn}`, got '{Types.Name(v)}'");
-
-    private static object? Call(Interpreter it, object? self, string name, Args a, Kwargs k) =>
-        self switch
-        {
-            string s => StringMethod(it, s, name, a, k),
-            StarList l => ListMethod(l, name, a, k),
-            StarDict d => DictMethod(d, name, a, k),
-            StarBytes b => b.Value.Select(x => (object?)new BigInteger(x)).ToList() is var xs && name == "elems" ? new StarList(xs) : null,
-            _ => throw new StarlarkException($"no method `{name}`"),
-        };
-
-    // ---------------------------------------------------------------- strings
-
-    /// <summary>Resolve optional [start, end) arguments (in code points) over a string of length <paramref name="len"/>.</summary>
-    private static (int Start, int End) Bounds(Args a, int first, int len)
+    /// <summary>Resolve optional [start, end) arguments against a sequence length, clamping as in the spec's Indexing rules.</summary>
+    private static (int Start, int End) Bounds(ArgReader a, int len)
     {
-        int Clamp(object? v, int dflt)
+        int Clamp(BigInteger? v, int dflt)
         {
             if (v is null) return dflt;
-            var n = (BigInteger)v;
+            var n = v.Value;
             if (n < 0) n += len;
             return (int)BigInteger.Clamp(n, 0, len);
         }
-        return (Clamp(a.Count > first ? a[first] : null, 0), Clamp(a.Count > first + 1 ? a[first + 1] : null, len));
+        var s = Clamp(a.OptInt("start"), 0);
+        var e = Clamp(a.OptInt("end"), len);
+        return (s, e);
     }
 
-    private static object? StringMethod(Interpreter it, string s, string name, Args a, Kwargs k)
+    private static bool IsSpace(char c) => char.IsWhiteSpace(c) || c == '\u0085' || c == ' ';
+
+    private static StarList StrList(IEnumerable<string> xs) => new(xs.Select(x => (object?)x));
+
+    // ---------------------------------------------------------------- strings
+
+    private static void RegisterStrings()
     {
-        switch (name)
+        var m = StringMethods;
+
+        m["capitalize"] = (_, self, a) =>
         {
-            case "upper": return s.ToUpperInvariant();
-            case "lower": return s.ToLowerInvariant();
-            case "capitalize": return s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s[1..].ToLowerInvariant();
-            case "title":
+            a.Done();
+            var s = (string)self;
+            return s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s[1..].ToLowerInvariant();
+        };
+        m["upper"] = (_, self, a) => { a.Done(); return ((string)self).ToUpperInvariant(); };
+        m["lower"] = (_, self, a) => { a.Done(); return ((string)self).ToLowerInvariant(); };
+
+        m["title"] = (_, self, a) =>
+        {
+            a.Done();
+            var sb = new StringBuilder();
+            bool prevLetter = false;
+            foreach (char c in (string)self)
             {
-                var sb = new StringBuilder();
-                bool prevLetter = false;
-                foreach (char c in s)
+                bool letter = char.IsLetter(c);
+                sb.Append(letter ? (prevLetter ? char.ToLowerInvariant(c) : char.ToUpperInvariant(c)) : c);
+                prevLetter = letter;
+            }
+            return sb.ToString();
+        };
+
+        m["isalpha"] = (_, self, a) => { a.Done(); var s = (string)self; return s.Length > 0 && s.All(char.IsLetter); };
+        m["isdigit"] = (_, self, a) => { a.Done(); var s = (string)self; return s.Length > 0 && s.All(char.IsDigit); };
+        m["isalnum"] = (_, self, a) => { a.Done(); var s = (string)self; return s.Length > 0 && s.All(char.IsLetterOrDigit); };
+        m["isspace"] = (_, self, a) => { a.Done(); var s = (string)self; return s.Length > 0 && s.All(IsSpace); };
+        m["islower"] = (_, self, a) =>
+        {
+            a.Done();
+            var s = (string)self;
+            return s.Any(c => char.IsLower(c) || char.IsUpper(c)) && !s.Any(char.IsUpper);
+        };
+        m["isupper"] = (_, self, a) =>
+        {
+            a.Done();
+            var s = (string)self;
+            return s.Any(c => char.IsLower(c) || char.IsUpper(c)) && !s.Any(char.IsLower);
+        };
+        m["istitle"] = (_, self, a) =>
+        {
+            a.Done();
+            var s = (string)self;
+            bool anyCased = false, prevCased = false;
+            foreach (char c in s)
+            {
+                bool cased = char.IsUpper(c) || char.IsLower(c);
+                if (cased)
                 {
-                    sb.Append(char.IsLetter(c) ? (prevLetter ? char.ToLowerInvariant(c) : char.ToUpperInvariant(c)) : c);
-                    prevLetter = char.IsLetter(c);
+                    anyCased = true;
+                    // A letter starting a word must be uppercase; one continuing a word, lowercase.
+                    if (!prevCased && !char.IsUpper(c)) return false;
+                    if (prevCased && !char.IsLower(c)) return false;
                 }
-                return sb.ToString();
+                prevCased = cased;
             }
-            case "isalpha": return s.Length > 0 && s.All(char.IsLetter);
-            case "isdigit": return s.Length > 0 && s.All(char.IsDigit);
-            case "isalnum": return s.Length > 0 && s.All(char.IsLetterOrDigit);
-            case "isspace": return s.Length > 0 && s.All(char.IsWhiteSpace);
-            case "islower": return s.Any(char.IsLetter) && !s.Any(char.IsUpper);
-            case "isupper": return s.Any(char.IsLetter) && !s.Any(char.IsLower);
-            case "istitle":
-                return s.Any(char.IsLetter) && (string)StringMethod(it, s, "title", [], []) == s;
+            return anyCased;
+        };
 
-            case "elems": return new StarList(CodePoints.Split(s).Select(x => (object?)x));
-            case "codepoints":
-                return new StarList(CodePoints.Split(s).Select(x => (object?)new BigInteger(char.ConvertToUtf32(x, 0))));
+        m["elems"] = (_, self, a) => { a.Done(); return new StarElems(self); };
 
-            case "strip": return Strip(s, a, true, true);
-            case "lstrip": return Strip(s, a, true, false);
-            case "rstrip": return Strip(s, a, false, true);
+        m["strip"] = (_, self, a) => Strip((string)self, a.OptStr("cutset"), true, true);
+        m["lstrip"] = (_, self, a) => Strip((string)self, a.OptStr("cutset"), true, false);
+        m["rstrip"] = (_, self, a) => Strip((string)self, a.OptStr("cutset"), false, true);
 
-            case "startswith": return StartsEnds(s, a, true);
-            case "endswith": return StartsEnds(s, a, false);
+        m["startswith"] = (_, self, a) => StartsEnds((string)self, a, starts: true);
+        m["endswith"] = (_, self, a) => StartsEnds((string)self, a, starts: false);
 
-            case "removeprefix":
+        m["removeprefix"] = (_, self, a) =>
+        {
+            var s = (string)self; var p = StrArg(a, "x");
+            return s.StartsWith(p, StringComparison.Ordinal) ? s[p.Length..] : s;
+        };
+        m["removesuffix"] = (_, self, a) =>
+        {
+            var s = (string)self; var p = StrArg(a, "x");
+            return s.EndsWith(p, StringComparison.Ordinal) ? s[..^p.Length] : s;
+        };
+
+        m["find"] = (_, self, a) => Find((string)self, a, last: false, mustExist: false);
+        m["rfind"] = (_, self, a) => Find((string)self, a, last: true, mustExist: false);
+        m["index"] = (_, self, a) => Find((string)self, a, last: false, mustExist: true);
+        m["rindex"] = (_, self, a) => Find((string)self, a, last: true, mustExist: true);
+
+        m["count"] = (_, self, a) =>
+        {
+            var s = (string)self;
+            var sub = StrArg(a, "sub");
+            var (st, en) = Bounds(a, s.Length);
+            a.Done();
+            if (st > en) return BigInteger.Zero;
+            string region = s[st..en];
+            if (sub.Length == 0) return new BigInteger(region.Length + 1);
+            int n = 0, pos = 0;
+            while ((pos = region.IndexOf(sub, pos, StringComparison.Ordinal)) >= 0)
             {
-                var p = S(a[0], name);
-                return s.StartsWith(p, StringComparison.Ordinal) ? s[p.Length..] : s;
+                n++;
+                pos += sub.Length;
             }
-            case "removesuffix":
-            {
-                var p = S(a[0], name);
-                return s.EndsWith(p, StringComparison.Ordinal) ? s[..^p.Length] : s;
-            }
+            return new BigInteger(n);
+        };
 
-            case "find": return Find(s, a, name, last: false, throwIfMissing: false);
-            case "rfind": return Find(s, a, name, last: true, throwIfMissing: false);
-            case "index": return Find(s, a, name, last: false, throwIfMissing: true);
-            case "rindex": return Find(s, a, name, last: true, throwIfMissing: true);
-
-            case "count":
+        m["replace"] = (_, self, a) =>
+        {
+            var s = (string)self;
+            var old = StrArg(a, "old");
+            var neu = StrArg(a, "new");
+            var cnt = a.OptInt("count");
+            a.Done();
+            int max = cnt is { } c && c >= 0 ? (int)BigInteger.Min(c, int.MaxValue) : -1;
+            var sb = new StringBuilder();
+            int pos = 0, done = 0;
+            while (max < 0 || done < max)
             {
-                var sub = S(a[0], name);
-                var cps = CodePoints.Split(s);
-                var (st, en) = Bounds(a, 1, cps.Count);
-                string region = string.Concat(cps.Skip(st).Take(Math.Max(0, en - st)));
-                if (sub.Length == 0) return new BigInteger(CodePoints.Length(region) + 1);
-                int n = 0, pos = 0;
-                while ((pos = region.IndexOf(sub, pos, StringComparison.Ordinal)) >= 0) { n++; pos += sub.Length; }
-                return new BigInteger(n);
-            }
-
-            case "replace":
-            {
-                var old = S(a[0], name);
-                var neu = S(a[1], name);
-                int max = a.Count > 2 && a[2] is BigInteger m ? (int)m : -1;
-                if (max < 0 && old.Length > 0) return s.Replace(old, neu, StringComparison.Ordinal);
-                var sb = new StringBuilder();
-                int pos = 0, done = 0;
-                while (max < 0 || done < max)
+                int idx;
+                if (old.Length == 0)
                 {
-                    int idx = old.Length == 0 ? (pos <= s.Length ? pos : -1) : s.IndexOf(old, pos, StringComparison.Ordinal);
-                    if (idx < 0) break;
-                    sb.Append(s, pos, idx - pos).Append(neu);
-                    if (old.Length == 0)
-                    {
-                        if (idx < s.Length) sb.Append(s[idx]);
-                        pos = idx + 1;
-                    }
-                    else
-                    {
-                        pos = idx + old.Length;
-                    }
-                    done++;
+                    idx = pos <= s.Length ? pos : -1;
                 }
-                if (pos < s.Length) sb.Append(s, pos, s.Length - pos);
-                return sb.ToString();
-            }
-
-            case "join":
-            {
-                var parts = Ops.Iterate(a[0]).Select(x => x is string p ? p : throw new StarlarkException($"join() expects strings, got '{Types.Name(x)}'"));
-                return string.Join(s, parts);
-            }
-
-            case "split": return Split(s, a, rightSplit: false);
-            case "rsplit": return Split(s, a, rightSplit: true);
-
-            case "splitlines":
-            {
-                bool keep = a.Count > 0 && Types.Truthy(a[0]);
-                var lines = new List<object?>();
-                int start = 0;
-                for (int i = 0; i < s.Length; i++)
+                else
                 {
-                    if (s[i] == '\n' || s[i] == '\r')
-                    {
-                        int end = i;
-                        if (s[i] == '\r' && i + 1 < s.Length && s[i + 1] == '\n') i++;
-                        lines.Add(keep ? s[start..(i + 1)] : s[start..end]);
-                        start = i + 1;
-                    }
+                    idx = s.IndexOf(old, pos, StringComparison.Ordinal);
                 }
-                if (start < s.Length) lines.Add(s[start..]);
-                return new StarList(lines);
-            }
-
-            case "partition":
-            case "rpartition":
-            {
-                var sep = S(a[0], name);
-                if (sep.Length == 0) throw new StarlarkException("Empty separator");
-                int idx = name == "partition" ? s.IndexOf(sep, StringComparison.Ordinal) : s.LastIndexOf(sep, StringComparison.Ordinal);
-                if (idx < 0)
+                if (idx < 0) break;
+                sb.Append(s, pos, idx - pos).Append(neu);
+                if (old.Length == 0)
                 {
-                    return name == "partition" ? new StarTuple([s, "", ""]) : new StarTuple(["", "", s]);
+                    if (idx < s.Length) sb.Append(s[idx]);
+                    pos = idx + 1;
                 }
-                return new StarTuple([s[..idx], sep, s[(idx + sep.Length)..]]);
+                else
+                {
+                    pos = idx + old.Length;
+                }
+                done++;
             }
+            if (pos < s.Length) sb.Append(s, pos, s.Length - pos);
+            return sb.ToString();
+        };
 
-            case "format": return StringFormat.Format(s, a, k);
-        }
-        throw new StarlarkException($"string has no method `{name}`");
+        m["join"] = (_, self, a) =>
+        {
+            var iterable = a.Required("elements");
+            a.Done();
+            var parts = Ops.Iterate(iterable).Select(x =>
+                x is string p ? p : throw Err.Param("elements", "string", x)).ToList();
+            return string.Join((string)self, parts);
+        };
+
+        m["split"] = (_, self, a) => Split((string)self, a, right: false);
+        m["rsplit"] = (_, self, a) => Split((string)self, a, right: true);
+
+        m["splitlines"] = (_, self, a) =>
+        {
+            var s = (string)self;
+            bool keep = a.Bool("keepends", false);
+            a.Done();
+            var lines = new List<string>();
+            int start = 0;
+            for (int i = 0; i < s.Length; i++)
+            {
+                if (s[i] == '\n' || s[i] == '\r')
+                {
+                    int end = i;
+                    if (s[i] == '\r' && i + 1 < s.Length && s[i + 1] == '\n') i++;
+                    lines.Add(keep ? s[start..(i + 1)] : s[start..end]);
+                    start = i + 1;
+                }
+            }
+            if (start < s.Length) lines.Add(s[start..]);
+            return StrList(lines);
+        };
+
+        m["partition"] = (_, self, a) => Partition((string)self, a, last: false);
+        m["rpartition"] = (_, self, a) => Partition((string)self, a, last: true);
+
+        m["format"] = (_, self, a) =>
+        {
+            var args = a.Rest();
+            var kw = a.RestKw();
+            return StringFormat.Format((string)self, args, kw);
+        };
     }
 
-    private static string Strip(string s, Args a, bool left, bool right)
+    private static object Strip(string s, string? cutset, bool left, bool right)
     {
-        char[]? chars = a.Count > 0 && a[0] is string c ? c.ToCharArray() : null;
-        bool Strippable(char ch) => chars is null ? char.IsWhiteSpace(ch) : chars.Contains(ch);
+        bool Strippable(char ch) => cutset is null ? IsSpace(ch) : cutset.Contains(ch);
         int st = 0, en = s.Length;
         if (left) while (st < en && Strippable(s[st])) st++;
         if (right) while (en > st && Strippable(s[en - 1])) en--;
         return s[st..en];
     }
 
-    private static object? StartsEnds(string s, Args a, bool starts)
+    private static object StartsEnds(string s, ArgReader a, bool starts)
     {
-        bool Test(string p) => starts ? s.StartsWith(p, StringComparison.Ordinal) : s.EndsWith(p, StringComparison.Ordinal);
-        return a[0] switch
+        var arg = a.Required(starts ? "prefix" : "suffix");
+        var (st, en) = Bounds(a, s.Length);
+        a.Done();
+        string region = st <= en ? s[st..en] : "";
+        bool Test(string p) => starts ? region.StartsWith(p, StringComparison.Ordinal) : region.EndsWith(p, StringComparison.Ordinal);
+        switch (arg)
         {
-            string p => Test(p),
-            StarTuple t => t.Items.Any(x => Test(S(x, starts ? "startswith" : "endswith"))),
-            var v => throw new StarlarkException($"Expected string or tuple of strings, got '{Types.Name(v)}'"),
-        };
+            case string p: return Test(p);
+            case StarTuple t:
+                foreach (var x in t.Items)
+                {
+                    if (x is not string)
+                    {
+                        throw Err.Param(starts ? "prefix" : "suffix", "string", x);
+                    }
+                }
+                return t.Items.Any(x => Test((string)x!));
+            default:
+                throw Err.Param(starts ? "prefix" : "suffix", "string or tuple of strings", arg);
+        }
     }
 
-    private static object? Find(string s, Args a, string name, bool last, bool throwIfMissing)
+    private static object Find(string s, ArgReader a, bool last, bool mustExist)
     {
-        var sub = S(a[0], name);
-        var cps = CodePoints.Split(s);
-        var (st, en) = Bounds(a, 1, cps.Count);
-        string region = string.Concat(cps.Skip(st).Take(Math.Max(0, en - st)));
-        int idx = last ? region.LastIndexOf(sub, StringComparison.Ordinal) : region.IndexOf(sub, StringComparison.Ordinal);
+        var sub = StrArg(a, "sub");
+        var (st, en) = Bounds(a, s.Length);
+        a.Done();
+        int idx = -1;
+        if (st <= en)
+        {
+            string region = s[st..en];
+            idx = last ? region.LastIndexOf(sub, StringComparison.Ordinal) : region.IndexOf(sub, StringComparison.Ordinal);
+        }
         if (idx < 0)
         {
-            if (throwIfMissing) throw new StarlarkException($"Substring `{sub}` not found in `{s}`");
+            if (mustExist) throw new StarlarkException($"Substring \"{sub}\" not found in \"{s}\"");
             return new BigInteger(-1);
         }
-        return new BigInteger(st + CodePoints.Length(region[..idx]));
+        return new BigInteger(st + idx);
     }
 
-    private static object? Split(string s, Args a, bool rightSplit)
+    private static object Partition(string s, ArgReader a, bool last)
     {
-        int max = a.Count > 1 && a[1] is BigInteger m ? (int)m : -1;
-        var parts = new List<string>();
-        if (a.Count == 0 || a[0] is null)
+        var sep = StrArg(a, "x");
+        a.Done();
+        if (sep.Length == 0) throw new StarlarkException("Empty separator cannot be used for partitioning");
+        int idx = last ? s.LastIndexOf(sep, StringComparison.Ordinal) : s.IndexOf(sep, StringComparison.Ordinal);
+        if (idx < 0)
         {
-            // Split on runs of whitespace.
-            var words = s.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).ToList();
-            if (max >= 0 && words.Count > max + 1)
-            {
-                if (rightSplit)
-                {
-                    var tail = words.Skip(words.Count - max).ToList();
-                    string head = s.TrimEnd();
-                    for (int i = 0; i < max; i++) head = head[..head.LastIndexOfAny([' ', '\t', '\n', '\r'])].TrimEnd();
-                    words = [head, .. tail];
-                }
-                else
-                {
-                    string rest = s.TrimStart();
-                    var head = new List<string>();
-                    for (int i = 0; i < max; i++)
-                    {
-                        int sp = rest.IndexOfAny([' ', '\t', '\n', '\r']);
-                        head.Add(rest[..sp]);
-                        rest = rest[sp..].TrimStart();
-                    }
-                    head.Add(rest);
-                    words = head;
-                }
-            }
-            return new StarList(words.Select(x => (object?)x));
+            return last ? new StarTuple(["", "", s]) : new StarTuple([s, "", ""]);
         }
-        var sep = S(a[0], "split");
-        if (sep.Length == 0) throw new StarlarkException("Empty separator");
-        if (!rightSplit)
+        return new StarTuple([s[..idx], sep, s[(idx + sep.Length)..]]);
+    }
+
+    private static object Split(string s, ArgReader a, bool right)
+    {
+        var sepArg = a.Optional("sep");
+        var maxArg = a.OptInt("maxsplit");
+        a.Done();
+        int max = maxArg is { } m && m >= 0 ? (int)BigInteger.Min(m, int.MaxValue) : -1;
+
+        if (sepArg is null)
+        {
+            return SplitWhitespace(s, max, right);
+        }
+        if (sepArg is not string sep) throw Err.Param("sep", "string", sepArg);
+        if (sep.Length == 0) throw new StarlarkException("Empty separator cannot be used for splitting");
+
+        var parts = new List<string>();
+        if (!right)
         {
             int pos = 0;
             while (max < 0 || parts.Count < max)
@@ -307,120 +360,367 @@ public static class Methods
             int end = s.Length;
             while (max < 0 || parts.Count < max)
             {
-                int idx = end - sep.Length < 0 ? -1 : s.LastIndexOf(sep, end - sep.Length, StringComparison.Ordinal);
+                int idx = end - sep.Length < 0 ? -1 : s.LastIndexOf(sep, end - 1, end, StringComparison.Ordinal);
                 if (idx < 0) break;
                 parts.Insert(0, s[(idx + sep.Length)..end]);
                 end = idx;
             }
             parts.Insert(0, s[..end]);
         }
-        return new StarList(parts.Select(x => (object?)x));
+        return StrList(parts);
+    }
+
+    private static object SplitWhitespace(string s, int max, bool right)
+    {
+        var result = new List<string>();
+        if (!right)
+        {
+            int i = 0;
+            while (true)
+            {
+                while (i < s.Length && IsSpace(s[i])) i++;
+                if (i >= s.Length) break;
+                if (max >= 0 && result.Count == max)
+                {
+                    result.Add(s[i..]);
+                    return StrList(result);
+                }
+                int st = i;
+                while (i < s.Length && !IsSpace(s[i])) i++;
+                result.Add(s[st..i]);
+            }
+            return StrList(result);
+        }
+
+        int j = s.Length;
+        while (true)
+        {
+            while (j > 0 && IsSpace(s[j - 1])) j--;
+            if (j <= 0) break;
+            if (max >= 0 && result.Count == max)
+            {
+                result.Insert(0, s[..j]);
+                return StrList(result);
+            }
+            int en = j;
+            while (j > 0 && !IsSpace(s[j - 1])) j--;
+            result.Insert(0, s[j..en]);
+        }
+        return StrList(result);
+    }
+
+    // ---------------------------------------------------------------- bytes
+
+    private static void RegisterBytes()
+    {
+        BytesMethods["elems"] = (_, self, a) => { a.Done(); return new StarElems(self); };
     }
 
     // ---------------------------------------------------------------- lists
 
-    private static object? ListMethod(StarList l, string name, Args a, Kwargs k)
+    private static int ListIndex(BigInteger i, int len)
     {
-        switch (name)
+        if (i < 0) i += len;
+        if (i < 0 || i >= len) throw new StarlarkException($"Index `{i}` is out of bound for a list of length {len}");
+        return (int)i;
+    }
+
+    private static void RegisterLists()
+    {
+        var m = ListMethods;
+
+        m["append"] = (_, self, a) => { var x = a.Required("x"); a.Done(); ((StarList)self).Add(x); return null; };
+        m["clear"] = (_, self, a) => { a.Done(); ((StarList)self).Clear(); return null; };
+        m["extend"] = (_, self, a) =>
         {
-            case "append": l.Add(a[0]); return null;
-            case "extend": l.AddRange(Ops.Iterate(a[0]).ToList()); return null;
-            case "clear": l.Clear(); return null;
-            case "insert":
+            var x = a.Required("x");
+            a.Done();
+            var l = (StarList)self;
+            l.AddRange(Ops.Iterate(x).ToList());
+            return null;
+        };
+        m["insert"] = (_, self, a) =>
+        {
+            var l = (StarList)self;
+            var i = a.Int("index");
+            var x = a.Required("x");
+            a.Done();
+            if (i < 0) i += l.Count;
+            l.Insert((int)BigInteger.Clamp(i, 0, l.Count), x);
+            return null;
+        };
+        m["pop"] = (_, self, a) =>
+        {
+            var l = (StarList)self;
+            var idx = a.OptInt("index");
+            a.Done();
+            if (l.Count == 0) throw new StarlarkException("Cannot pop from an empty list");
+            int i = idx is { } v ? ListIndex(v, l.Count) : l.Count - 1;
+            var result = l[i];
+            l.RemoveAt(i);
+            return result;
+        };
+        m["remove"] = (_, self, a) =>
+        {
+            var l = (StarList)self;
+            var x = a.Required("x");
+            a.Done();
+            for (int i = 0; i < l.Count; i++)
             {
-                int i = I(a[0], name);
-                if (i < 0) i = Math.Max(0, i + l.Count);
-                l.Insert(Math.Min(i, l.Count), a[1]);
-                return null;
-            }
-            case "pop":
-            {
-                if (l.Count == 0) throw new StarlarkException("pop from empty list");
-                int i = a.Count > 0 ? I(a[0], name) : -1;
-                if (i < 0) i += l.Count;
-                if (i < 0 || i >= l.Count) throw new StarlarkException($"Index `{i}` is out of bounds");
-                var v = l[i];
-                l.RemoveAt(i);
-                return v;
-            }
-            case "remove":
-            {
-                for (int i = 0; i < l.Count; i++)
+                if (Ops.Equal(l[i], x))
                 {
-                    if (Ops.Equal(l[i], a[0]))
-                    {
-                        l.RemoveAt(i);
-                        return null;
-                    }
+                    l.RemoveAt(i);
+                    return null;
                 }
-                throw new StarlarkException($"Item {Repr.Of(a[0])} not found in list");
             }
-            case "index":
+            throw new StarlarkException($"Item {Repr.Of(x)} not found in list");
+        };
+        m["index"] = (_, self, a) =>
+        {
+            var l = (StarList)self;
+            var x = a.Required("x");
+            var (st, en) = Bounds(a, l.Count);
+            a.Done();
+            for (int i = st; i < en; i++)
             {
-                int start = a.Count > 1 ? I(a[1], name) : 0;
-                int end = a.Count > 2 ? I(a[2], name) : l.Count;
-                for (int i = Math.Max(0, start < 0 ? start + l.Count : start); i < Math.Min(l.Count, end < 0 ? end + l.Count : end); i++)
-                {
-                    if (Ops.Equal(l[i], a[0])) return new BigInteger(i);
-                }
-                throw new StarlarkException($"Item {Repr.Of(a[0])} not found in list");
+                if (Ops.Equal(l[i], x)) return new BigInteger(i);
             }
-        }
-        throw new StarlarkException($"list has no method `{name}`");
+            throw new StarlarkException($"Item {Repr.Of(x)} not found in list");
+        };
     }
 
     // ---------------------------------------------------------------- dicts
 
-    private static object? DictMethod(StarDict d, string name, Args a, Kwargs k)
+    private static void RegisterDicts()
     {
-        switch (name)
+        var m = DictMethods;
+
+        m["get"] = (_, self, a) =>
         {
-            case "get":
-                return d.TryGet(a[0], out var v) ? v : a.Count > 1 ? a[1] : null;
-            case "keys": return new StarList(d.Keys);
-            case "values": return new StarList(d.Values);
-            case "items": return new StarList(d.Entries.Select(kv => (object?)new StarTuple([kv.Key, kv.Value])));
-            case "clear": d.Clear(); return null;
-            case "pop":
-                if (d.Remove(a[0], out var popped)) return popped;
-                if (a.Count > 1) return a[1];
-                throw new StarlarkException($"Key `{Repr.Of(a[0])}` not found in dictionary");
-            case "popitem":
+            var key = a.Required("key");
+            var dflt = a.Optional("default");
+            a.Done();
+            return ((StarDict)self).TryGet(key, out var v) ? v : dflt;
+        };
+        m["keys"] = (_, self, a) => { a.Done(); return new StarList(((StarDict)self).Keys); };
+        m["values"] = (_, self, a) => { a.Done(); return new StarList(((StarDict)self).Values); };
+        m["items"] = (_, self, a) =>
+        {
+            a.Done();
+            return new StarList(((StarDict)self).Entries.Select(kv => (object?)new StarTuple([kv.Key, kv.Value])));
+        };
+        m["clear"] = (_, self, a) => { a.Done(); ((StarDict)self).Clear(); return null; };
+        m["pop"] = (_, self, a) =>
+        {
+            var d = (StarDict)self;
+            var key = a.Required("key");
+            bool hasDefault = a.Has("default");
+            var dflt = a.Optional("default");
+            a.Done();
+            if (d.Remove(key, out var v)) return v;
+            if (hasDefault) return dflt;
+            throw new StarlarkException($"Key `{Repr.Of(key)}` not found in dictionary");
+        };
+        m["popitem"] = (_, self, a) =>
+        {
+            a.Done();
+            var d = (StarDict)self;
+            if (d.Count == 0) throw new StarlarkException("popitem(): dictionary is empty");
+            var first = d.Entries.First();
+            d.Remove(first.Key, out var ignored);
+            return new StarTuple([first.Key, first.Value]);
+        };
+        m["setdefault"] = (_, self, a) =>
+        {
+            var d = (StarDict)self;
+            var key = a.Required("key");
+            var dflt = a.Optional("default");
+            a.Done();
+            if (d.TryGet(key, out var existing)) return existing;
+            d.Set(key, dflt);
+            return dflt;
+        };
+        m["update"] = (_, self, a) =>
+        {
+            var d = (StarDict)self;
+            bool hasPairs = a.Has("pairs") && a.RemainingPositional > 0;
+            var pairs = a.Optional("pairs");
+            var kw = a.RestKw();
+            a.Done(allowKwargs: true);
+            // The spec allows None here, but the reference test suites (Go and Rust) reject it.
+            if (hasPairs && pairs is null)
             {
-                if (d.Count == 0) throw new StarlarkException("popitem(): dictionary is empty");
-                var first = d.Entries.First();
-                d.Remove(first.Key, out _);
-                return new StarTuple([first.Key, first.Value]);
+                throw new StarlarkException("update(): got NoneType, want iterable or dict (cannot be None)");
             }
-            case "setdefault":
+            if (pairs is not null)
             {
-                if (d.TryGet(a[0], out var existing)) return existing;
-                var dflt = a.Count > 1 ? a[1] : null;
-                d.Set(a[0], dflt);
-                return dflt;
-            }
-            case "update":
-            {
-                if (a.Count > 0)
+                if (pairs is StarDict src)
                 {
-                    if (a[0] is StarDict src)
+                    foreach (var kv in src.Entries.ToList()) d.Set(kv.Key, kv.Value);
+                }
+                else
+                {
+                    foreach (var pair in Ops.Iterate(pairs).ToList())
                     {
-                        foreach (var kv in src.Entries.ToList()) d.Set(kv.Key, kv.Value);
-                    }
-                    else
-                    {
-                        foreach (var pair in Ops.Iterate(a[0]).ToList())
+                        List<object?> kv;
+                        try
                         {
-                            var kv = Ops.Iterate(pair).ToList();
-                            if (kv.Count != 2) throw new StarlarkException("update() element is not a (key, value) pair");
-                            d.Set(kv[0], kv[1]);
+                            kv = Ops.Iterate(pair).ToList();
                         }
+                        catch (StarlarkException)
+                        {
+                            throw new StarlarkException($"dict update sequence element is not iterable: '{Types.Name(pair)}'");
+                        }
+                        if (kv.Count != 2) throw new StarlarkException("dict update sequence element has the wrong length (expected 2)");
+                        d.Set(kv[0], kv[1]);
                     }
                 }
-                foreach (var kv in k) d.Set(kv.Key, kv.Value);
-                return null;
+            }
+            foreach (var (k, v) in kw) d.Set(k, v);
+            return null;
+        };
+    }
+
+    // ---------------------------------------------------------------- sets
+
+    private static List<object?> Others(ArgReader a)
+    {
+        var all = new List<object?>();
+        foreach (var o in a.Rest())
+        {
+            foreach (var x in Ops.Iterate(o).ToList())
+            {
+                Hashing.CheckHashable(x);
+                all.Add(x);
             }
         }
-        throw new StarlarkException($"dict has no method `{name}`");
+        return all;
+    }
+
+    private static StarSet Copy(StarSet s)
+    {
+        var r = new StarSet();
+        foreach (var x in s.Items) r.Add(x);
+        return r;
+    }
+
+    private static void RegisterSets()
+    {
+        var m = SetMethods;
+
+        m["add"] = (_, self, a) => { var x = a.Required("x"); a.Done(); ((StarSet)self).Add(x); return null; };
+        m["clear"] = (_, self, a) => { a.Done(); ((StarSet)self).Clear(); return null; };
+        m["discard"] = (_, self, a) => { var x = a.Required("x"); a.Done(); ((StarSet)self).Remove(x); return null; };
+        m["remove"] = (_, self, a) =>
+        {
+            var x = a.Required("x");
+            a.Done();
+            if (!((StarSet)self).Remove(x)) throw new StarlarkException($"Item {Repr.Of(x)} not found in set");
+            return null;
+        };
+        m["pop"] = (_, self, a) =>
+        {
+            a.Done();
+            var s = (StarSet)self;
+            if (s.Count == 0) throw new StarlarkException("Cannot pop from an empty set");
+            return s.Pop();
+        };
+
+        m["union"] = (_, self, a) =>
+        {
+            var r = Copy((StarSet)self);
+            foreach (var x in Others(a)) r.Add(x);
+            return r;
+        };
+        m["update"] = (_, self, a) =>
+        {
+            var s = (StarSet)self;
+            foreach (var x in Others(a)) s.Add(x);
+            return null;
+        };
+        m["intersection"] = (_, self, a) =>
+        {
+            var s = (StarSet)self;
+            var r = Copy(s);
+            foreach (var o in a.Rest())
+            {
+                var keep = SetOf(o);
+                foreach (var x in r.Items.ToList()) if (!keep.Contains(x)) r.Remove(x);
+            }
+            return r;
+        };
+        m["intersection_update"] = (_, self, a) =>
+        {
+            var s = (StarSet)self;
+            var sets = a.Rest().Select(SetOf).ToList();
+            foreach (var x in s.Items.ToList())
+            {
+                if (sets.Any(o => !o.Contains(x))) s.Remove(x);
+            }
+            return null;
+        };
+        m["difference"] = (_, self, a) =>
+        {
+            var r = Copy((StarSet)self);
+            foreach (var x in Others(a)) r.Remove(x);
+            return r;
+        };
+        m["difference_update"] = (_, self, a) =>
+        {
+            var s = (StarSet)self;
+            foreach (var x in Others(a)) s.Remove(x);
+            return null;
+        };
+        m["symmetric_difference"] = (_, self, a) =>
+        {
+            var s = (StarSet)self;
+            var other = SetOf(a.Required("x"));
+            a.Done();
+            var r = new StarSet();
+            foreach (var x in s.Items) if (!other.Contains(x)) r.Add(x);
+            foreach (var x in other.Items) if (!s.Contains(x)) r.Add(x);
+            return r;
+        };
+        m["symmetric_difference_update"] = (_, self, a) =>
+        {
+            var s = (StarSet)self;
+            var other = SetOf(a.Required("x"));
+            a.Done();
+            foreach (var x in other.Items.ToList())
+            {
+                if (s.Contains(x)) s.Remove(x); else s.Add(x);
+            }
+            return null;
+        };
+        m["isdisjoint"] = (_, self, a) =>
+        {
+            var s = (StarSet)self;
+            var other = SetOf(a.Required("x"));
+            a.Done();
+            return !s.Items.Any(other.Contains);
+        };
+        m["issubset"] = (_, self, a) =>
+        {
+            var s = (StarSet)self;
+            var other = SetOf(a.Required("x"));
+            a.Done();
+            return s.Items.All(other.Contains);
+        };
+        m["issuperset"] = (_, self, a) =>
+        {
+            var s = (StarSet)self;
+            var other = SetOf(a.Required("x"));
+            a.Done();
+            return other.Items.All(s.Contains);
+        };
+    }
+
+    /// <summary>View any iterable as a set (for membership), checking hashability of every element.</summary>
+    public static StarSet SetOf(object? iterable)
+    {
+        if (iterable is StarSet s) return s;
+        var r = new StarSet();
+        foreach (var x in Ops.Iterate(iterable).ToList()) r.Add(x);
+        return r;
     }
 }

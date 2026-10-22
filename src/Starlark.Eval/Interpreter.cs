@@ -3,16 +3,20 @@ using Starlark.Syntax;
 
 namespace Starlark.Eval;
 
-/// <summary>A lexical scope. A module frame has <c>Locals == null</c>; its variables are the globals.</summary>
-internal sealed class Frame(Frame? parent, HashSet<string>? locals)
+/// <summary>A lexical scope: a module, a function call, or a comprehension.</summary>
+internal sealed class Frame(Frame? parent, HashSet<string> locals, bool isModule)
 {
     public Frame? Parent { get; } = parent;
-    public HashSet<string>? Locals { get; } = locals;
+
+    /// <summary>Every name bound in this block (known statically). A name in here but not in <see cref="Vars"/> is unassigned.</summary>
+    public HashSet<string> Locals { get; } = locals;
+
+    public bool IsModule { get; } = isModule;
     public Dictionary<string, object?> Vars { get; } = [];
     public object? ReturnValue { get; set; }
 }
 
-/// <summary>An executed module: its (frozen) global variables.</summary>
+/// <summary>An executed module: its global variables, frozen.</summary>
 public sealed class Module(Dictionary<string, object?> globals)
 {
     public IReadOnlyDictionary<string, object?> Globals => globals;
@@ -22,10 +26,13 @@ public sealed class Module(Dictionary<string, object?> globals)
 /// <summary>A function defined with <c>def</c> or <c>lambda</c>.</summary>
 public sealed class StarFunction : ICallable
 {
-    internal StarFunction(string name, DefParams parms, Stmt? body, Expr? lambdaBody, object?[] defaults,
+    private bool _frozen;
+
+    internal StarFunction(string name, object decl, DefParams parms, Stmt? body, Expr? lambdaBody, object?[] defaults,
         Frame closure, HashSet<string> locals, Interpreter owner, CodeMap codemap)
     {
         Name = name;
+        Decl = decl;
         Params = parms;
         Body = body;
         LambdaBody = lambdaBody;
@@ -37,6 +44,11 @@ public sealed class StarFunction : ICallable
     }
 
     public string Name { get; }
+    public string TypeName => "function";
+
+    /// <summary>The syntax node this function was created from; used to detect recursion.</summary>
+    internal object Decl { get; }
+
     internal DefParams Params { get; }
     internal Stmt? Body { get; }
     internal Expr? LambdaBody { get; }
@@ -48,22 +60,34 @@ public sealed class StarFunction : ICallable
 
     public object? Call(Interpreter interp, IReadOnlyList<object?> args, IReadOnlyList<KeyValuePair<string, object?>> kwargs) =>
         Owner.CallFunction(this, args, kwargs);
+
+    /// <summary>Freezing a function freezes its parameter defaults and the variables it captured.</summary>
+    internal void FreezeContents()
+    {
+        if (_frozen) return;
+        _frozen = true;
+        foreach (var d in Defaults) Freezer.Freeze(d);
+        for (var f = Closure; f is not null; f = f.Parent)
+        {
+            foreach (var v in f.Vars.Values) Freezer.Freeze(v);
+        }
+    }
 }
 
 /// <summary>
 /// A tree-walking Starlark interpreter. Each <see cref="Interpreter"/> holds the universe of predeclared
-/// names (builtins) and the module loader for <c>load()</c>.
+/// names (builtins and host-defined values) and the module loader for <c>load()</c>.
 /// </summary>
 public sealed class Interpreter
 {
     private enum Flow { Normal, Break, Continue, Return }
 
-    private const int MaxCallDepth = 200;
+    private const int MaxCallDepth = 150;
 
     private readonly Dictionary<string, object?> _universe = [];
-    private readonly Dictionary<string, Module> _moduleCache = [];
+    private readonly Dictionary<string, Module?> _moduleCache = [];
+    private readonly HashSet<object> _active = [];
     private int _depth;
-    private Frame _globals = null!;
 
     /// <summary>Loads a module by the identifier given to <c>load()</c>: returns its source, or null if unknown.</summary>
     public Func<string, string?>? SourceLoader { get; set; }
@@ -72,6 +96,12 @@ public sealed class Interpreter
     public Action<string> Print { get; set; } = Console.WriteLine;
 
     public Dialect Dialect { get; set; } = Dialect.Standard;
+
+    /// <summary>
+    /// The spec makes rebinding a global a static error. Set this to allow it, as some implementations
+    /// (and tests that reuse names) do.
+    /// </summary>
+    public bool AllowGlobalReassign { get; set; }
 
     public Interpreter()
     {
@@ -86,7 +116,7 @@ public sealed class Interpreter
 
     // ------------------------------------------------------------------ entry points
 
-    /// <summary>Parse and run a module, then freeze its globals.</summary>
+    /// <summary>Parse, resolve and run a module, then freeze its globals.</summary>
     public Module Execute(string filename, string source)
     {
         var ast = AstModule.Parse(filename, source, Dialect);
@@ -95,37 +125,21 @@ public sealed class Interpreter
 
     public Module Execute(AstModule ast)
     {
-        var saved = _globals;
-        var frame = new Frame(null, null);
-        _globals = frame;
-        try
-        {
-            ExecStmt(ast.Statement, frame, ast.CodeMap);
-        }
-        finally
-        {
-            _globals = saved;
-        }
+        var names = Resolver.Resolve(ast, _universe.ContainsKey, AllowGlobalReassign);
+        var frame = new Frame(null, names, isModule: true);
+        ExecStmt(ast.Statement, frame, ast.CodeMap);
         foreach (var v in frame.Vars.Values) Freezer.Freeze(v);
         return new Module(frame.Vars);
     }
 
-    /// <summary>Evaluate a single expression in a fresh scope, e.g. <c>Eval("1 + 2")</c>.</summary>
+    /// <summary>Evaluate a single expression, e.g. <c>Eval("1 + 2")</c>.</summary>
     public object? Eval(string expression)
     {
         var ast = AstModule.Parse("<eval>", "_ = (" + expression + "\n)", Dialect);
+        var names = Resolver.Resolve(ast, _universe.ContainsKey, allowGlobalReassign: true);
+        var frame = new Frame(null, names, isModule: true);
         var assign = (AssignStmt)ast.Statement;
-        var frame = new Frame(null, null);
-        var saved = _globals;
-        _globals = frame;
-        try
-        {
-            return EvalExpr(assign.Value, frame, ast.CodeMap);
-        }
-        finally
-        {
-            _globals = saved;
-        }
+        return EvalExpr(assign.Value, frame, ast.CodeMap);
     }
 
     // ------------------------------------------------------------------ statements
@@ -177,7 +191,7 @@ public sealed class Interpreter
                 return ExecFor(fo, f, cm);
 
             case DefStmt d:
-                f.Vars[d.Name.Name] = MakeFunction(d.Name.Name, d.Parameters, d.Body, null, f, cm);
+                f.Vars[d.Name.Name] = MakeFunction(d.Name.Name, d, d.Parameters, d.Body, null, f, cm);
                 return Flow.Normal;
 
             case ReturnStmt r:
@@ -216,9 +230,10 @@ public sealed class Interpreter
         var module = LoadModule(l.Module.Value);
         foreach (var arg in l.Args)
         {
-            if (!module.TryGet(arg.Their.Value, out var v))
+            string their = arg.Their.Value;
+            if (their.StartsWith('_') || !module.TryGet(their, out var v))
             {
-                throw new StarlarkException($"Module `{l.Module.Value}` does not export `{arg.Their.Value}`");
+                throw new StarlarkException($"Module `{l.Module.Value}` does not export `{their}`");
             }
             f.Vars[arg.Local.Name] = v;
         }
@@ -226,19 +241,35 @@ public sealed class Interpreter
 
     private Module LoadModule(string id)
     {
-        if (_moduleCache.TryGetValue(id, out var m)) return m;
-        string? src = SourceLoader?.Invoke(id) ?? throw new StarlarkException($"Cannot load module `{id}`");
-        _moduleCache[id] = null!; // detect cycles
+        if (_moduleCache.TryGetValue(id, out var cached))
+        {
+            return cached ?? throw new StarlarkException($"Cycle in load graph: module `{id}` is being loaded");
+        }
+        string src = SourceLoader?.Invoke(id) ?? throw new StarlarkException($"Cannot load module `{id}`");
+        _moduleCache[id] = null; // mark as in progress, to detect cycles
         try
         {
-            m = Execute(id, src);
+            var saved = (_depth, _active.ToArray());
+            _depth = 0;
+            _active.Clear();
+            try
+            {
+                var m = Execute(id, src);
+                _moduleCache[id] = m;
+                return m;
+            }
+            finally
+            {
+                _depth = saved._depth;
+                _active.Clear();
+                foreach (var x in saved.Item2) _active.Add(x);
+            }
         }
         catch
         {
             _moduleCache.Remove(id);
             throw;
         }
-        return _moduleCache[id] = m;
     }
 
     // ------------------------------------------------------------------ assignment
@@ -248,7 +279,7 @@ public sealed class Interpreter
         switch (target)
         {
             case IdentTarget id:
-                Store(id.Ident.Name, value, f);
+                f.Vars[id.Ident.Name] = value;
                 break;
             case TupleTarget t:
             {
@@ -256,8 +287,8 @@ public sealed class Interpreter
                 if (items.Count != t.Items.Count)
                 {
                     throw new StarlarkException(items.Count < t.Items.Count
-                        ? $"Not enough values to unpack (got {items.Count}, expected {t.Items.Count})"
-                        : $"Too many values to unpack (got {items.Count}, expected {t.Items.Count})");
+                        ? $"Too few values to unpack (got {items.Count}, expected {t.Items.Count}): length mismatch"
+                        : $"Too many values to unpack (got {items.Count}, expected {t.Items.Count}): length mismatch");
                 }
                 for (int i = 0; i < items.Count; i++) Assign(t.Items[i], items[i], f, cm);
                 break;
@@ -266,28 +297,36 @@ public sealed class Interpreter
                 Ops.SetIndex(EvalExpr(ix.Target, f, cm), EvalExpr(ix.Index, f, cm), value);
                 break;
             case DotTarget d:
-                throw new StarlarkException($"Cannot assign to field `{d.Field.Value}` of type '{Types.Name(EvalExpr(d.Target, f, cm))}'");
+                throw new StarlarkException(
+                    $"Cannot assign to field `{d.Field.Value}` of a value of type '{Types.Name(EvalExpr(d.Target, f, cm))}': not supported");
         }
-    }
-
-    private static void Store(string name, object? value, Frame f)
-    {
-        f.Vars[name] = value;
     }
 
     private void AssignModify(AssignModifyStmt m, Frame f, CodeMap cm)
     {
+        // `x += y` on a list extends it in place; `|=`, `&=`, `-=`, `^=` on dicts and sets update them in place.
         object? Combine(object? old, object? rhs)
         {
-            // `list += iterable` mutates in place.
-            if (m.Op == Syntax.AssignOp.Add && old is StarList list)
+            switch (m.Op)
             {
-                if (rhs is not StarList and not StarTuple)
-                {
-                    throw new StarlarkException($"Operation `+=` not supported on types 'list' and '{Types.Name(rhs)}'");
-                }
-                list.AddRange(Ops.Iterate(rhs).ToList());
-                return list;
+                case Syntax.AssignOp.Add when old is StarList list:
+                    list.AddRange(Ops.Iterate(rhs).ToList());
+                    return list;
+                case Syntax.AssignOp.BitOr when old is StarDict d && rhs is StarDict other:
+                    foreach (var kv in other.Entries.ToList()) d.Set(kv.Key, kv.Value);
+                    return d;
+                case Syntax.AssignOp.BitOr when old is StarSet s && rhs is StarSet other:
+                    foreach (var x in other.Items.ToList()) s.Add(x);
+                    return s;
+                case Syntax.AssignOp.BitAnd when old is StarSet s && rhs is StarSet other:
+                    foreach (var x in s.Items.ToList()) if (!other.Contains(x)) s.Remove(x);
+                    return s;
+                case Syntax.AssignOp.Subtract when old is StarSet s && rhs is StarSet other:
+                    foreach (var x in other.Items.ToList()) s.Remove(x);
+                    return s;
+                case Syntax.AssignOp.BitXor when old is StarSet s && rhs is StarSet other:
+                    foreach (var x in other.Items.ToList()) { if (s.Contains(x)) s.Remove(x); else s.Add(x); }
+                    return s;
             }
             return Ops.Binary(ToBinOp(m.Op), old, rhs);
         }
@@ -297,17 +336,21 @@ public sealed class Interpreter
             case IdentTarget id:
             {
                 var old = Lookup(id.Ident.Name, f);
-                Store(id.Ident.Name, Combine(old, EvalExpr(m.Value, f, cm)), f);
+                f.Vars[id.Ident.Name] = Combine(old, EvalExpr(m.Value, f, cm));
                 break;
             }
             case IndexTarget ix:
             {
+                // The target's subexpressions are evaluated exactly once, before the right-hand side.
                 var obj = EvalExpr(ix.Target, f, cm);
                 var idx = EvalExpr(ix.Index, f, cm);
                 var old = Ops.Index(obj, idx);
                 Ops.SetIndex(obj, idx, Combine(old, EvalExpr(m.Value, f, cm)));
                 break;
             }
+            case DotTarget d:
+                throw new StarlarkException(
+                    $"Cannot assign to field `{d.Field.Value}` of a value of type '{Types.Name(EvalExpr(d.Target, f, cm))}': not supported");
             default:
                 throw new StarlarkException("Invalid target of augmented assignment");
         }
@@ -335,17 +378,10 @@ public sealed class Interpreter
     {
         for (var fr = f; fr is not null; fr = fr.Parent)
         {
-            if (fr.Locals is null)
-            {
-                // Module frame: globals, then the universe.
-                if (fr.Vars.TryGetValue(name, out var g)) return g;
-                break;
-            }
-            if (fr.Locals.Contains(name))
-            {
-                if (fr.Vars.TryGetValue(name, out var v)) return v;
-                throw new StarlarkException($"Local variable `{name}` referenced before assignment");
-            }
+            if (!fr.Locals.Contains(name)) continue;
+            if (fr.Vars.TryGetValue(name, out var v)) return v;
+            throw new StarlarkException(
+                $"{(fr.IsModule ? "Global" : "Local")} variable `{name}` referenced before assignment");
         }
         if (_universe.TryGetValue(name, out var u)) return u;
         throw new StarlarkException($"Variable `{name}` not found");
@@ -353,14 +389,14 @@ public sealed class Interpreter
 
     // ------------------------------------------------------------------ functions
 
-    private StarFunction MakeFunction(string name, IReadOnlyList<Syntax.Parameter> parameters, Stmt? body, Expr? lambdaBody,
-        Frame f, CodeMap cm)
+    private StarFunction MakeFunction(string name, object decl, IReadOnlyList<Syntax.Parameter> parameters, Stmt? body,
+        Expr? lambdaBody, Frame f, CodeMap cm)
     {
         var defs = DefParams.Unpack(parameters, cm);
         var defaults = defs.Params.Select(p => p.Default is null ? Missing.Value : EvalExpr(p.Default, f, cm)).ToArray();
         var locals = new HashSet<string>(parameters.Where(p => p.Name is not null).Select(p => p.Name!.Name));
         if (body is not null) LocalCollector.Collect(body, locals);
-        return new StarFunction(name, defs, body, lambdaBody, defaults, f, locals, this, cm);
+        return new StarFunction(name, decl, defs, body, lambdaBody, defaults, f, locals, this, cm);
     }
 
     internal sealed class Missing
@@ -372,14 +408,18 @@ public sealed class Interpreter
     {
         if (_depth >= MaxCallDepth || !System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
         {
-            throw new StarlarkException("Maximum call depth exceeded (recursion is not allowed in Starlark)");
+            throw new StarlarkException("Maximum call depth exceeded");
         }
-        var frame = new Frame(fn.Closure, fn.Locals);
-        BindArguments(fn, args, kwargs, frame);
+        if (!_active.Add(fn.Decl))
+        {
+            throw new StarlarkException($"Function `{fn.Name}` was called recursively: recursion is not allowed in Starlark");
+        }
 
+        var frame = new Frame(fn.Closure, fn.Locals, isModule: false);
         _depth++;
         try
         {
+            BindArguments(fn, args, kwargs, frame);
             if (fn.LambdaBody is not null)
             {
                 return EvalExpr(fn.LambdaBody, frame, fn.CodeMap);
@@ -390,6 +430,7 @@ public sealed class Interpreter
         finally
         {
             _depth--;
+            _active.Remove(fn.Decl);
         }
     }
 
@@ -403,7 +444,8 @@ public sealed class Interpreter
 
         if (args.Count > idx.NumPositional && idx.Args is null)
         {
-            throw new StarlarkException($"Too many positional arguments to `{fn.Name}`: expected {idx.NumPositional}, got {args.Count}");
+            throw new StarlarkException(
+                $"Too many positional arguments to `{fn.Name}`: function accepts {idx.NumPositional} positional argument(s), {args.Count} given");
         }
         for (int i = 0; i < Math.Min(args.Count, idx.NumPositional); i++)
         {
@@ -417,8 +459,13 @@ public sealed class Interpreter
         }
 
         StarDict? extra = idx.Kwargs is null ? null : new StarDict();
+        var seen = new HashSet<string>();
         foreach (var (name, value) in kwargs)
         {
+            if (!seen.Add(name))
+            {
+                throw new StarlarkException($"Argument `{name}` of `{fn.Name}` was supplied more than once (repeated named argument)");
+            }
             int target = -1;
             for (int i = 0; i < ps.Count; i++)
             {
@@ -443,7 +490,7 @@ public sealed class Interpreter
             }
             else
             {
-                throw new StarlarkException($"Unexpected parameter named `{name}` for `{fn.Name}`");
+                throw new StarlarkException($"Unexpected parameter named `{name}` for call to `{fn.Name}`");
             }
         }
         if (idx.Kwargs is { } ki)
@@ -473,7 +520,7 @@ public sealed class Interpreter
         {
             return c.Call(this, args, kwargs ?? []);
         }
-        throw new StarlarkException($"Operation `call()` not supported on type '{Types.Name(callee)}'");
+        throw new StarlarkException($"Operation `call()` not supported on type '{Types.Name(callee)}': not callable");
     }
 
     // ------------------------------------------------------------------ expressions
@@ -562,7 +609,7 @@ public sealed class Interpreter
                 return EvalCall(call, f, cm);
 
             case LambdaExpr lam:
-                return MakeFunction("lambda", lam.Parameters, null, lam.Body, f, cm);
+                return MakeFunction("lambda", lam, lam.Parameters, null, lam.Body, f, cm);
 
             case ListComprehension lc:
             {
@@ -607,7 +654,7 @@ public sealed class Interpreter
         {
             if (c is ForClauseClause fc) CollectTargetNames(fc.For.Variable, names);
         }
-        var scope = new Frame(outer, names);
+        var scope = new Frame(outer, names, isModule: false);
 
         void Run(ForClause clause, int clauseIndex, bool isFirst)
         {
@@ -682,7 +729,7 @@ public sealed class Interpreter
         }
         if (callee is not ICallable c)
         {
-            throw new StarlarkException($"Operation `call()` not supported on type '{Types.Name(callee)}'");
+            throw new StarlarkException($"Operation `call()` not supported on type '{Types.Name(callee)}': not callable");
         }
         return c.Call(this, args, kwargs);
     }
