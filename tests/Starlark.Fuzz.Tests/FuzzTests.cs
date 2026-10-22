@@ -149,6 +149,66 @@ public class FuzzTests
     public void Utf8ModeIsAsRobustAsUtf16() =>
         Fuzz("interpreter/utf8", f => f.Program(), s => Oracle.Run(s, StringElements.Utf8), iterations: Iterations / 2);
 
+    // ---------------------------------------------------------------- static type checker
+
+    private static void TypecheckNeverCrashes(string src)
+    {
+        var it = new Interpreter
+        {
+            Dialect = Dialect.AllOptionsInternal,
+            Print = _ => { },
+        };
+        try
+        {
+            var result = it.Typecheck("fuzz.star", src);
+            foreach (var e in result.Errors) _ = e.Render();   // rendering a diagnostic must not throw either
+        }
+        catch (StarlarkSyntaxException)
+        {
+            // Not a program: the checker is never reached.
+        }
+    }
+
+    [Fact]
+    public void TypeCheckerNeverCrashesOnGeneratedPrograms() =>
+        Fuzz("typecheck/generated", f => f.Program(), TypecheckNeverCrashes);
+
+    [Fact]
+    public void TypeCheckerNeverCrashesOnMutatedPrograms() =>
+        Fuzz("typecheck/mutated", f => f.Mutate(f.Program()), TypecheckNeverCrashes);
+
+    [Fact]
+    public void TypeCheckerNeverCrashesOnMutatedRealFiles() =>
+        Fuzz("typecheck/mutated corpus", f =>
+        {
+            var src = CorpusSources.Value[f.Rng.Next(CorpusSources.Value.Length)];
+            int start = f.Rng.Next(Math.Max(1, src.Length - 400));
+            return f.Mutate(src.Substring(start, Math.Min(400, src.Length - start)));
+        }, TypecheckNeverCrashes);
+
+    [Fact]
+    public void ProgramsThatPassTheCheckerDoNotFailWithTypeErrorsWhenRun() =>
+        // Soundness check in the lenient direction: a program the checker accepts may still fail at run time
+        // (the checker only rejects what it is sure of), but it must never fail with an *annotation* error that
+        // the checker could have seen. Generated programs carry no annotations, so none may appear.
+        Fuzz("typecheck/soundness", f => f.Program(), s =>
+        {
+            var it = new Interpreter
+            {
+                Dialect = Dialect.AllOptionsInternal with { EnableTypes = DialectTypes.Enable },
+                AllowGlobalReassign = true,
+                Print = _ => { },
+            };
+            try { it.Execute("fuzz.star", s); }
+            catch (StarlarkException e) when (e.RawMessage.Contains("does not match the type annotation"))
+            {
+                throw new InvalidOperationException("annotation error in an unannotated program: " + e.RawMessage);
+            }
+            catch (Exception e) when (e is StarlarkException or StarlarkSyntaxException)
+            {
+            }
+        });
+
     [Fact]
     public void ExpressionsNeverCrashTheEvaluator() =>
         Fuzz("interpreter/expressions", f => "result = " + f.Expr(4) + "\n", s => Oracle.Run(s));

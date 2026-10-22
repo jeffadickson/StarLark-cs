@@ -153,7 +153,4 @@ internal static class TypeExprUnpack
                 throw Invalid(st, expr, expr.GetType().Name);
         }
     }
-
-    /// <summary>Types that are <c>""</c> or start with <c>_</c> are wildcards matching everything (deprecated).</summary>
-    public static bool TypeStrLiteralIsWildcard(string s) => s.Length == 0 || s.StartsWith('_');
 }

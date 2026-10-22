@@ -140,8 +140,38 @@ public sealed class Interpreter
         return Execute(ast);
     }
 
+    /// <summary>
+    /// Statically check a module's types without running it. Reports calls with wrong argument types, operators on
+    /// types that do not support them, mismatched returns, and so on. Never throws for a type error.
+    /// </summary>
+    public TypeCheck.TypeCheckResult Typecheck(string filename, string source)
+    {
+        var ast = AstModule.Parse(filename, source, Dialect);
+        return Typecheck(ast);
+    }
+
+    public TypeCheck.TypeCheckResult Typecheck(AstModule ast) =>
+        TypeCheck.TypeChecker.Check(ast, _universe.ContainsKey);
+
+    /// <summary>
+    /// When true, <see cref="Execute(AstModule)"/> type checks the module first and refuses to run it if the checker
+    /// reports errors. Off by default, as in the Rust crate (checking is opt-in).
+    /// </summary>
+    public bool TypecheckBeforeExecute { get; set; }
+
     public Module Execute(AstModule ast)
     {
+        if (TypecheckBeforeExecute)
+        {
+            var result = Typecheck(ast);
+            if (result.Errors.Count > 0)
+            {
+                var first = result.Errors[0];
+                var e = new StarlarkException(first.Message);
+                e.AttachLocation(first.Span, first.CodeMap);
+                throw e;
+            }
+        }
         var names = Resolver.Resolve(ast, _universe.ContainsKey, AllowGlobalReassign);
         var frame = new Frame(null, names, isModule: true);
         using (Strings.Enter(StringElements))

@@ -289,6 +289,71 @@ public class PropertyTests
 
     // ---------------------------------------------------------------- front end
 
+    // ---------------------------------------------------------------- static vs dynamic types
+
+    /// <summary>Source for an expression of a known type, and that type's annotation.</summary>
+    private static readonly (string Annotation, Gen<string> Value)[] Typed =
+    [
+        ("int", SmallInt.Select(i => i.ToString(CultureInfo.InvariantCulture))),
+        ("str", Word.Select(Q)),
+        ("bool", Gen.Item(["True", "False"])),
+        ("float", Gen.Double(Range.LinearDouble(-9, 9)).Select(d => d.ToString("R", CultureInfo.InvariantCulture))),
+        ("list[int]", IntList.Select(Lit)),
+        ("list[str]", Word.List(Range.LinearInt32(0, 3)).Select(ws => "[" + string.Join(", ", ws.Select(Q)) + "]")),
+        ("dict[str, int]", Gen.Constant("{'a': 1}")),
+        ("tuple[int, str]", Gen.Constant("(1, 'a')")),
+        ("None", Gen.Constant("None")),
+    ];
+
+    private static Gen<(string Annotation, string Value)> TypedValue =>
+        Gen.Item(Typed).SelectMany(t => t.Value.Select(v => (t.Annotation, v)));
+
+    [Fact]
+    public void CheckerAndRuntimeAgreeOnWhetherACallFitsItsAnnotation() => Hold(
+        from param in TypedValue.ForAll()
+        from arg in TypedValue.ForAll()
+        let program = $"def f(x: {param.Annotation}):\n    pass\n\ndef g():\n    f({arg.Value})\n\ng()\n"
+        let it = new Interpreter { Dialect = Dialect.Standard with { EnableTypes = DialectTypes.Enable } }
+        let staticOk = it.Typecheck("t", program).Errors.Count == 0
+        let dynamicOk = RunsWithoutAnnotationError(it, program)
+        // The checker is allowed to be lenient (accept something that fails at run time, e.g. list[int] vs list[str]
+        // of an empty list), but it must never reject a program that runs fine.
+        select !dynamicOk || staticOk);
+
+    [Fact]
+    public void WhatTheRuntimeRejectsForLiteralArgumentsTheCheckerRejectsToo() => Hold(
+        from param in TypedValue.ForAll()
+        from arg in TypedValue.ForAll()
+        let program = $"def f(x: {param.Annotation}):\n    pass\n\ndef g():\n    f({arg.Value})\n\ng()\n"
+        let it = new Interpreter { Dialect = Dialect.Standard with { EnableTypes = DialectTypes.Enable } }
+        let staticOk = it.Typecheck("t", program).Errors.Count == 0
+        let dynamicOk = RunsWithoutAnnotationError(it, program)
+        // The converse of the property above. The arguments are concrete literals, so there is no excuse for
+        // leniency: if the call fails at run time, the checker must have flagged it before the program ran.
+        select !staticOk || dynamicOk);
+
+    private static bool RunsWithoutAnnotationError(Interpreter it, string program)
+    {
+        try
+        {
+            it.Execute("t", program);
+            return true;
+        }
+        catch (StarlarkException e) when (e.RawMessage.Contains("does not match the type annotation"))
+        {
+            return false;
+        }
+    }
+
+    [Fact]
+    public void InferredTypesAreSoundForLiterals() => Hold(
+        from v in TypedValue.ForAll()
+        let program = $"def f():\n    x = {v.Value}\n"
+        let inferred = new Interpreter { Dialect = Dialect.Standard }.Typecheck("t", program).Types["x"]
+        let value = Eval(v.Value)
+        // A value must be a member of the type the checker infers for the expression that produced it.
+        select inferred.Matches(value));
+
     [Fact]
     public void ParsedIntegerLiteralsHaveTheirValue() => Hold(
         from n in Gen.Int64(Range.LinearInt64(0, long.MaxValue)).ForAll()
