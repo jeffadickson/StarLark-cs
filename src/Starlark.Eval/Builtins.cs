@@ -40,6 +40,7 @@ public static class Builtins
         {
             StarBytes b => b,
             string s => new StarBytes(Encoding.UTF8.GetBytes(s)),
+            StarUtf16 u16 => new StarBytes(Encoding.UTF8.GetBytes(u16.Value)),
             var v when v is StarList or StarTuple or StarRange or StarSet or StarElems or StarDict =>
                 new StarBytes(Ops.Iterate(v).Select(ByteOf).ToArray()),
             var v => throw new StarlarkException(
@@ -49,6 +50,10 @@ public static class Builtins
         u["dict"] = new Builtin("dict", MakeDict);
         u["json"] = JsonModule.Create();
         u["typing"] = TypingModule.Create();
+
+        // utf16(x): a string whose elements are UTF-16 code units whatever the interpreter's string mode is.
+        // utf16(s).bytes() style access is deliberately absent: convert with str() or bytes() instead.
+        Add(u, "utf16", (_, a) => Utf16.Convert(a.Required("x")));
 
         Add(u, "dir", (_, a) => new StarList(Methods.Names(a.Required("x")).OrderBy(x => x, StringComparer.Ordinal).Select(x => (object?)x)));
 
@@ -91,6 +96,7 @@ public static class Builtins
         Add(u, "hash", (_, a) => a.Required("x") switch
         {
             string s => new BigInteger(Hashing.JavaStringHash(s)),
+            StarUtf16 u => new BigInteger(Hashing.JavaStringHash(u.Value)),
             StarBytes b => new BigInteger(Hashing.Fnv1a(b.Value)),
             var v => throw Err.Param("x", "string or bytes", v),
         });
@@ -146,7 +152,7 @@ public static class Builtins
         Add(u, "str", (_, a) =>
         {
             var v = a.Required("x");
-            return v is string or StarBytes ? Repr.Str(v) : Repr.Of(v);
+            return v is string or StarBytes or StarUtf16 ? Repr.Str(v) : Repr.Of(v);
         });
         Add(u, "tuple", (_, a) => new StarTuple(a.Has("x") ? Ops.Iterate(a.Required("x")).ToArray() : []));
         Add(u, "type", (_, a) => Types.Name(a.Required("x")));

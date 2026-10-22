@@ -56,6 +56,8 @@ public static class Ops
             case (BigInteger x, double y): return CompareIntFloat(x, y) == 0;
             case (double x, BigInteger y): return CompareIntFloat(y, x) == 0;
             case (string x, string y): return x == y;
+            // A utf16 is a different type from a string, so the two are never equal (as 1 != "1").
+            case (StarUtf16 x, StarUtf16 y): return x.Equals(y);
             case (StarBytes x, StarBytes y): return x.Equals(y);
             case (StarList x, StarList y): return ReferenceEquals(x, y) || SeqEqual(x.Items, y.Items);
             case (StarTuple x, StarTuple y): return SeqEqual(x.Items, y.Items);
@@ -105,6 +107,7 @@ public static class Ops
             case (BigInteger x, double y): return CompareIntFloat(x, y);
             case (double x, BigInteger y): return -CompareIntFloat(y, x);
             case (string x, string y): return CompareStrings(x, y);
+            case (StarUtf16 x, StarUtf16 y): return CompareStrings(x.Value, y.Value);
             case (StarBytes x, StarBytes y): return Math.Sign(x.Value.AsSpan().SequenceCompareTo(y.Value));
             case (StarList x, StarList y): return SeqCompare(x.Items, y.Items, op);
             case (StarTuple x, StarTuple y): return SeqCompare(x.Items, y.Items, op);
@@ -218,7 +221,12 @@ public static class Ops
         {
             case string s:
                 if (item is string sub) return s.Contains(sub, StringComparison.Ordinal);
+                if (item is StarUtf16 usub) return s.Contains(usub.Value, StringComparison.Ordinal);
                 throw new StarlarkException($"'in <string>' requires string as left operand, not '{Types.Name(item)}'");
+            case StarUtf16 u:
+                if (item is StarUtf16 usub2) return u.Value.Contains(usub2.Value, StringComparison.Ordinal);
+                if (item is string sub2) return u.Value.Contains(sub2, StringComparison.Ordinal);
+                throw new StarlarkException($"'in <utf16>' requires string or utf16 as left operand, not '{Types.Name(item)}'");
             case StarBytes b:
                 if (item is StarBytes sb) return b.Value.AsSpan().IndexOf(sb.Value) >= 0;
                 if (item is BigInteger bi)
@@ -246,6 +254,7 @@ public static class Ops
         {
             case (BigInteger x, BigInteger y): return x + y;
             case (string x, string y): return x + y;
+            case (StarUtf16 x, StarUtf16 y): return new StarUtf16(x.Value + y.Value);
             case (StarBytes x, StarBytes y): return new StarBytes([.. x.Value, .. y.Value]);
             case (StarList x, StarList y): return new StarList(x.Items.Concat(y.Items));
             case (StarTuple x, StarTuple y): return new StarTuple([.. x.Items, .. y.Items]);
@@ -268,6 +277,8 @@ public static class Ops
         int count = n < 0 ? 0 : (int)n;
         switch (seq)
         {
+            case StarUtf16 u:
+                return new StarUtf16((string)Repeat(u.Value, n)!);
             case string s:
                 if ((long)s.Length * count > int.MaxValue / 2) throw new StarlarkException("Result of repetition is too large");
                 return count == 0 ? "" : new StringBuilder(s.Length * count).Insert(0, s, count).ToString();
@@ -321,6 +332,7 @@ public static class Ops
     public static object? Percent(object? a, object? b)
     {
         if (a is string fmt) return StringFormat.Percent(fmt, b);
+        if (a is StarUtf16 ufmt) return new StarUtf16(StringFormat.Percent(ufmt.Value, b));
         if (a is BigInteger x && b is BigInteger y)
         {
             if (y.IsZero) throw new StarlarkException("Integer modulo by zero");
@@ -399,6 +411,7 @@ public static class Ops
     public static BigInteger Len(object? v) => v switch
     {
         string s => Strings.Len(s),
+        StarUtf16 u => u.Value.Length,
         StarBytes b => b.Value.Length,
         StarList l => l.Count,
         StarTuple t => t.Items.Length,
@@ -431,7 +444,7 @@ public static class Ops
             if (index is not BigInteger ei) throw Err.BadIndex("index", index);
             return et.Instances[NormIndex(ei, et.Instances.Count)];
         }
-        if (target is not (StarList or StarTuple or string or StarBytes or StarRange))
+        if (target is not (StarList or StarTuple or string or StarUtf16 or StarBytes or StarRange))
         {
             throw new StarlarkException($"Type '{Types.Name(target)}' is not indexable");
         }
@@ -444,6 +457,7 @@ public static class Ops
             case StarList l: return l[NormIndex(i, l.Count)];
             case StarTuple t: return t.Items[NormIndex(i, t.Items.Length)];
             case string s: return Strings.At(s, NormIndex(i, Strings.Len(s)));
+            case StarUtf16 u: return new StarUtf16(u.Value[NormIndex(i, u.Value.Length)].ToString());
             case StarBytes b: return new BigInteger(b.Value[NormIndex(i, b.Value.Length)]);
             case StarRange r:
             {
@@ -518,6 +532,9 @@ public static class Ops
                 return new StarTuple(SliceIndices(t.Items.Length, start, stop, step).Select(i => t.Items[i]).ToArray());
             case string s:
                 return Strings.Pick(s, SliceIndices(Strings.Len(s), start, stop, step));
+            case StarUtf16 u:
+                // UTF-16 slicing may cut a surrogate pair in half; that is allowed, as in Java and .NET.
+                return new StarUtf16(new string(SliceIndices(u.Value.Length, start, stop, step).Select(i => u.Value[i]).ToArray()));
             case StarBytes b:
                 return new StarBytes(SliceIndices(b.Value.Length, start, stop, step).Select(i => b.Value[i]).ToArray());
             case StarRange r:

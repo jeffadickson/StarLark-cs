@@ -76,11 +76,17 @@ public sealed class StarTuple(object?[] items)
 public sealed class StarElems(object source)
 {
     public object Source { get; } = source;
-    public string TypeName => Source is string ? "string.elems" : "bytes.elems";
+    public string TypeName => Source switch
+    {
+        string => "string.elems",
+        StarUtf16 => "utf16.elems",
+        _ => "bytes.elems",
+    };
 
     public IEnumerable<object?> Items => Source switch
     {
         string s => s.Select(c => (object?)c.ToString()),
+        StarUtf16 u => u.Value.Select(c => (object?)new StarUtf16(c.ToString())),
         StarBytes b => b.Value.Select(x => (object?)new BigInteger(x)),
         _ => [],
     };
@@ -322,6 +328,8 @@ public sealed class BoundMethod(string name, object receiver, Method method) : I
     public object? Call(Interpreter interp, IReadOnlyList<object?> args, IReadOnlyList<KeyValuePair<string, object?>> kwargs)
     {
         var r = new ArgReader(Name, args, kwargs);
+        // utf16 arguments are accepted anywhere a string is.
+        if (Receiver is StarUtf16 or string) r = r.Mapped(Utf16.Unwrap);
         var result = method(interp, Receiver, r);
         r.Done();
         return result;
@@ -383,6 +391,7 @@ public static class Hashing
                 if (!double.IsInfinity(d) && d == Math.Floor(d)) return new BigInteger(d).GetHashCode();
                 return d.GetHashCode();
             case string s: return JavaStringHash(s);
+            case StarUtf16 u: return JavaStringHash(u.Value) ^ 0x55555;
             case StarBytes b: return Fnv1a(b.Value);
             case StarTuple t: return t.Items.Aggregate(17, (h, x) => unchecked(h * 31 + Hash(x)));
             case StarList l: return l.Items.Aggregate(19, (h, x) => unchecked(h * 31 + Hash(x)));
@@ -411,6 +420,7 @@ public static class Types
         BigInteger => "int",
         double => "float",
         string => "string",
+        StarUtf16 => "utf16",
         StarBytes => "bytes",
         StarList => "list",
         StarTuple => "tuple",
@@ -432,6 +442,7 @@ public static class Types
         BigInteger i => !i.IsZero,
         double d => d != 0.0,
         string s => s.Length > 0,
+        StarUtf16 u => u.Value.Length > 0,
         StarBytes b => b.Value.Length > 0,
         StarList l => l.Count > 0,
         StarTuple t => t.Items.Length > 0,
@@ -470,6 +481,7 @@ public static class Repr
     public static string Str(object? v) => v switch
     {
         string s => s,
+        StarUtf16 u => u.Value,
         StarBytes b => Encoding.UTF8.GetString(b.Value),
         _ => Of(v),
     };
@@ -515,6 +527,7 @@ public static class Repr
         BigInteger i => i.ToString(),
         double d => FloatToString(d),
         string s => Quote(s),
+        StarUtf16 u => "utf16(" + Quote(u.Value) + ")",
         StarBytes b => new BytesLiteral(b.Value, default).ToString(),
         StarList l => "[" + string.Join(", ", l.Items.Select(Of)) + "]",
         StarTuple t => t.Items.Length == 1 ? $"({Of(t.Items[0])},)" : "(" + string.Join(", ", t.Items.Select(Of)) + ")",

@@ -89,7 +89,8 @@ public class TypeCheckerTests
     public void BuiltinArgumentsAreChecked()
     {
         // golden: failure
-        Assert.Equal(["Expected type `str` but got `int` @ 2:10"], Errors("def test():\n    hash(1)\n"));
+        // The Rust crate only hashes str (it has no bytes); the spec also allows bytes, and this port adds utf16.
+        Assert.Equal(["Expected type `str | utf16 | bytes` but got `int` @ 2:10"], Errors("def test():\n    hash(1)\n"));
         NoErrors("def test():\n    hash('x')\n");
     }
 

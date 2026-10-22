@@ -73,6 +73,7 @@ public abstract record Ty
     public static readonly Ty Int = new Name("int");
     public static readonly Ty Float = new Name("float");
     public static readonly Ty Str = new Name("str");
+    public static readonly Ty Utf16 = new Name("utf16");
     public static readonly Ty Bytes = new Name("bytes");
     public static readonly Ty Range = new Name("range");
     public static readonly Ty List = new ListTy(Any);
@@ -187,6 +188,7 @@ public abstract record Ty
         "int" => v is BigInteger,
         "float" => v is double,
         "str" => v is string,
+        "utf16" => v is StarUtf16,
         "bytes" => v is StarBytes,
         "range" => v is StarRange,
         "function" => v is StarFunction,

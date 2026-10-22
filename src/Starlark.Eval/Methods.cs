@@ -7,6 +7,20 @@ namespace Starlark.Eval;
 public static class Methods
 {
     private static readonly Dictionary<string, Method> StringMethods = new();
+
+    /// <summary>
+    /// The methods of <see cref="StarUtf16"/>: each string method, run on the underlying text with UTF-16 element
+    /// semantics, with <c>utf16</c> arguments accepted wherever a string is, and string results returned as <c>utf16</c>.
+    /// </summary>
+    private static readonly Lazy<Dictionary<string, Method>> Utf16Methods = new(() =>
+        StringMethods.ToDictionary(
+            kv => kv.Key,
+            kv => (Method)((interp, self, args) =>
+            {
+                // `args` already holds unwrapped values: BoundMethod maps them before dispatching here.
+                using var _ = Strings.Enter(StringElements.Utf16);
+                return Utf16.Wrap(kv.Value(interp, ((StarUtf16)self).Value, args));
+            })));
     private static readonly Dictionary<string, Method> BytesMethods = new();
     private static readonly Dictionary<string, Method> ListMethods = new();
     private static readonly Dictionary<string, Method> DictMethods = new();
@@ -24,6 +38,7 @@ public static class Methods
     private static Dictionary<string, Method>? TableFor(object? v) => v switch
     {
         string => StringMethods,
+        StarUtf16 => Utf16Methods.Value,
         StarBytes => BytesMethods,
         StarList => ListMethods,
         StarDict => DictMethods,

@@ -68,6 +68,7 @@ public static class JsonModule
                 sb.Append(JsonFloat(d));
                 return;
             case string s: Quote(sb, s); return;
+            case StarUtf16 u16: Quote(sb, u16.Value); return;
             case StarEnumValue e: Encode(sb, e.Value, inProgress, depth + 1); return;
         }
 

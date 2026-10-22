@@ -153,6 +153,7 @@ public sealed class TypeChecker
             case "float": return Ty.Float;
             case "bool": return Ty.Bool;
             case "str": return Ty.Str;
+            case "utf16": return Ty.Utf16;
             case "bytes": return Ty.Bytes;
             case "list": return Ty.List;
             case "dict": return Ty.Dict;
@@ -661,7 +662,7 @@ public sealed class TypeChecker
     {
         (Ty.AnyTy, _) or (_, Ty.AnyTy) => true,
         _ when IsNumber(a) && IsNumber(b) => true,
-        (Ty.Name x, Ty.Name y) => x.TypeName == y.TypeName && x.TypeName is "str" or "bool" or "bytes",
+        (Ty.Name x, Ty.Name y) => x.TypeName == y.TypeName && x.TypeName is "str" or "utf16" or "bool" or "bytes",
         (Ty.ListTy x, Ty.ListTy y) => TypeRelations.Intersects(x.Item, y.Item),
         (Ty.TupleOfTy or Ty.TupleTy, Ty.TupleOfTy or Ty.TupleTy) => true,
         _ => false,
@@ -671,7 +672,7 @@ public sealed class TypeChecker
     {
         Ty.AnyTy => true,
         Ty.ListTy or Ty.TupleOfTy or Ty.TupleTy or Ty.DictTy or Ty.SetTy or Ty.IterableTy => true,
-        Ty.Name { TypeName: "str" or "bytes" or "range" } => true,
+        Ty.Name { TypeName: "str" or "utf16" or "bytes" or "range" } => true,
         _ => false,
     });
 
@@ -715,6 +716,7 @@ public sealed class TypeChecker
         {
             case BinOp.Add:
                 if (a is Ty.Name { TypeName: "str" } && b is Ty.Name { TypeName: "str" }) return Ty.Str;
+                if (a is Ty.Name { TypeName: "utf16" } && b is Ty.Name { TypeName: "utf16" }) return Ty.Utf16;
                 if (a is Ty.Name { TypeName: "bytes" } && b is Ty.Name { TypeName: "bytes" }) return Ty.Bytes;
                 if (a is Ty.ListTy la && b is Ty.ListTy lb) return new Ty.ListTy(Ty.Union([la.Item, lb.Item]));
                 if (a is Ty.TupleOfTy ta && b is Ty.TupleOfTy tb) return new Ty.TupleOfTy(Ty.Union([ta.Item, tb.Item]));
@@ -729,7 +731,7 @@ public sealed class TypeChecker
                 if (IsSequence(a) && b is Ty.Name { TypeName: "int" }) return a;
                 return null;
             case BinOp.Percent:
-                return a is Ty.Name { TypeName: "str" } ? Ty.Str : null;
+                return a is Ty.Name { TypeName: "str" } ? Ty.Str : a is Ty.Name { TypeName: "utf16" } ? Ty.Utf16 : null;
             case BinOp.BitOr:
                 if (a is Ty.DictTy da && b is Ty.DictTy db) return new Ty.DictTy(Ty.Union([da.Key, db.Key]), Ty.Union([da.Value, db.Value]));
                 if (a is Ty.SetTy sa && b is Ty.SetTy sb) return new Ty.SetTy(Ty.Union([sa.Item, sb.Item]));
@@ -749,7 +751,7 @@ public sealed class TypeChecker
     };
 
     private static bool IsSequence(Ty t) =>
-        t is Ty.ListTy or Ty.TupleOfTy or Ty.TupleTy or Ty.Name { TypeName: "str" or "bytes" };
+        t is Ty.ListTy or Ty.TupleOfTy or Ty.TupleTy or Ty.Name { TypeName: "str" or "utf16" or "bytes" };
 
     private Ty IndexResult(Ty target, Ty index, Span span)
     {
@@ -778,6 +780,7 @@ public sealed class TypeChecker
                     results.Add(d.Value);
                     break;
                 case Ty.Name { TypeName: "str" }: results.Add(Ty.Str); break;
+                case Ty.Name { TypeName: "utf16" }: results.Add(Ty.Utf16); break;
                 case Ty.Name { TypeName: "bytes" }: results.Add(Ty.Int); break;
                 case Ty.Name { TypeName: "range" }: results.Add(Ty.Int); break;
                 case Ty.Custom { Identity: StarEnumType }: results.Add(t); break;

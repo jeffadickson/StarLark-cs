@@ -54,6 +54,7 @@ public static class TypeEval
         "float" => Ty.Float,
         "bool" => Ty.Bool,
         "str" => Ty.Str,
+        "utf16" => Ty.Utf16,
         "bytes" => Ty.Bytes,
         "list" => Ty.List,
         "dict" => Ty.Dict,

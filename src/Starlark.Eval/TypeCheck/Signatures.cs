@@ -36,7 +36,7 @@ public static class BuiltinSignatures
 
     private static readonly Ty Num = Ty.Union([Ty.Int, Ty.Float]);
     private static readonly Ty Str = Ty.Str;
-    private static readonly Ty Collection = Ty.Union([Ty.List, Ty.Tuple, Ty.Dict, Ty.Set, Ty.Range, Ty.Str, Ty.Bytes]);
+    private static readonly Ty Collection = Ty.Union([Ty.List, Ty.Tuple, Ty.Dict, Ty.Set, Ty.Range, Ty.Str, Ty.Utf16, Ty.Bytes]);
     private static readonly Ty Anything = Ty.Any;
     private static readonly Ty IterAny = Ty.Iterable;
 
@@ -55,12 +55,13 @@ public static class BuiltinSignatures
         ["float"] = S(Ty.Float, P("x", Anything, false)),
         ["getattr"] = S(Anything, P("x", Anything), P("name", Str), P("default", Anything, false)),
         ["hasattr"] = S(Ty.Bool, P("x", Anything), P("name", Str)),
-        ["hash"] = S(Ty.Int, P("x", Str)),
+        ["hash"] = S(Ty.Int, P("x", Ty.Union([Str, Ty.Utf16, Ty.Bytes]))),
         ["int"] = S(Ty.Int, P("x", Anything, false), new SigParam("base", ParamMode.PosOrName, Ty.Int, false)),
         ["len"] = S(Ty.Int, P("x", Collection)),
         ["print"] = S(Ty.None, Rest(Anything), N("sep", Str)),
         ["repr"] = S(Str, P("x", Anything)),
         ["str"] = S(Str, P("x", Anything)),
+        ["utf16"] = S(Ty.Utf16, P("x", Ty.Union([Ty.Str, Ty.Utf16, Ty.Bytes]))),
         ["type"] = S(Str, P("x", Anything)),
     };
 
@@ -91,16 +92,17 @@ public static class BuiltinSignatures
     {
         switch (receiver)
         {
-            case Ty.Name { TypeName: "str" }:
+            case Ty.Name { TypeName: "str" or "utf16" } own:
+                // Results are the same kind of string as the receiver: `utf16` methods return `utf16`.
                 return method switch
                 {
                     "upper" or "lower" or "capitalize" or "title" or "strip" or "lstrip" or "rstrip" or "replace" or "join"
-                        or "format" or "removeprefix" or "removesuffix" => Ty.Str,
+                        or "format" or "removeprefix" or "removesuffix" => own,
                     "startswith" or "endswith" or "isalpha" or "isdigit" or "isalnum" or "isspace" or "islower" or "isupper"
                         or "istitle" => Ty.Bool,
                     "find" or "rfind" or "index" or "rindex" or "count" => Ty.Int,
-                    "split" or "rsplit" or "splitlines" => new Ty.ListTy(Ty.Str),
-                    "partition" or "rpartition" => new Ty.TupleTy([Ty.Str, Ty.Str, Ty.Str]),
+                    "split" or "rsplit" or "splitlines" => new Ty.ListTy(own),
+                    "partition" or "rpartition" => new Ty.TupleTy([own, own, own]),
                     "elems" => Ty.Iterable,
                     _ => null,
                 };

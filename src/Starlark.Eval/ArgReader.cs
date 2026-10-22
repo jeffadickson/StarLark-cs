@@ -21,6 +21,10 @@ public sealed class ArgReader
         _kwargs = kwargs;
     }
 
+    /// <summary>A reader over the same arguments with every value passed through <paramref name="map"/>.</summary>
+    internal ArgReader Mapped(Func<object?, object?> map) =>
+        new(_fn, _args.Select(map).ToList(), _kwargs.Select(kv => new KeyValuePair<string, object?>(kv.Key, map(kv.Value))).ToList());
+
     public int RemainingPositional => _args.Count - _pos;
 
     /// <summary>Whether the next parameter was supplied (even if its value is None).</summary>
