@@ -64,6 +64,52 @@ public abstract record Ty
         public override int GetHashCode() => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(Identity);
     }
 
+    /// <summary>
+    /// What the static checker knows about a <c>struct(...)</c> value: its field names and their types.
+    /// A struct with no fields known (<see cref="Fields"/> is null) is just "some struct".
+    /// </summary>
+    public sealed record StructTy(IReadOnlyList<KeyValuePair<string, Ty>>? Fields) : Ty
+    {
+        public bool Equals(StructTy? o) =>
+            o is not null && (Fields is null ? o.Fields is null : o.Fields is not null && Fields.SequenceEqual(o.Fields));
+        public override int GetHashCode() => Fields?.Count ?? -1;
+
+        public bool TryGet(string name, out Ty ty)
+        {
+            foreach (var kv in Fields ?? [])
+            {
+                if (kv.Key == name)
+                {
+                    ty = kv.Value;
+                    return true;
+                }
+            }
+            ty = Any;
+            return false;
+        }
+    }
+
+    /// <summary>The type of a record's instances: its name, fields and their types. Identified by reference.</summary>
+    public sealed record RecordTy(string TypeName, object Identity, IReadOnlyList<KeyValuePair<string, Ty>> Fields) : Ty
+    {
+        public bool Equals(RecordTy? o) => o is not null && ReferenceEquals(Identity, o.Identity);
+        public override int GetHashCode() => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(Identity);
+
+        public bool TryGet(string name, out Ty ty)
+        {
+            foreach (var kv in Fields)
+            {
+                if (kv.Key == name)
+                {
+                    ty = kv.Value;
+                    return true;
+                }
+            }
+            ty = Any;
+            return false;
+        }
+    }
+
     // ---------------------------------------------------------------- common instances
 
     public static readonly Ty Any = new AnyTy();
@@ -143,6 +189,9 @@ public abstract record Ty
         IterableTy { Item: AnyTy } => "typing.Iterable",
         IterableTy i => $"typing.Iterable[{Display(i.Item)}]",
         Custom c => c.TypeName,
+        StructTy { Fields: null } => "struct",
+        StructTy s => "struct(" + string.Join(", ", s.Fields!.Select(f => f.Key + " = " + Display(f.Value))) + ")",
+        RecordTy r => r.TypeName,
         _ => t.GetType().Name,
     };
 
@@ -165,6 +214,8 @@ public abstract record Ty
         CallableTy => v is ICallable,
         IterableTy i => IsIterable(v) && (i.Item is AnyTy || SafeElements(v).All(i.Item.Matches)),
         Custom c => c.Identity is IUserType ut && ut.IsInstance(v),
+        StructTy s => v is StarStruct st && (s.Fields is null || s.Fields.All(f => st.TryGet(f.Key, out var fv) && f.Value.Matches(fv))),
+        RecordTy r => v is StarRecord rec && ReferenceEquals(rec.Type, r.Identity),
         _ => false,
     };
 

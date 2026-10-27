@@ -49,8 +49,24 @@ public static class TypeRelations
 
             case (Ty.Name a, Ty.Name b): return a.TypeName == b.TypeName;
             case (Ty.Custom a, Ty.Custom b): return a.Equals(b);
+            case (Ty.RecordTy a, Ty.RecordTy b): return a.Equals(b);
+            case (Ty.StructTy a, Ty.StructTy b): return StructsIntersect(a, b);
         }
         return false;
+    }
+
+    /// <summary>
+    /// Structs intersect when every field they have in common could hold the same value. A struct with unknown
+    /// fields overlaps any struct.
+    /// </summary>
+    private static bool StructsIntersect(Ty.StructTy a, Ty.StructTy b)
+    {
+        if (a.Fields is null || b.Fields is null) return true;
+        foreach (var f in a.Fields)
+        {
+            if (b.TryGet(f.Key, out var other) && !Intersects(f.Value, other)) return false;
+        }
+        return true;
     }
 
     /// <summary>The element type produced by iterating a value of this type, or null if it cannot be iterated.</summary>
@@ -67,6 +83,7 @@ public static class TypeRelations
         Ty.AnyTy => Ty.Any,
         Ty.NeverTy => Ty.Never,
         Ty.Custom { Identity: StarEnumType } => t,
+        Ty.Custom { TypeName: "enum" } => t,
         _ => null,
     };
 

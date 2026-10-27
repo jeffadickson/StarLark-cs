@@ -374,6 +374,9 @@ public class TypeCheckerTests
             "is not available on the types `list[int]` and `range`",
             "is not available on the types `dict[",
             "is not iterable",
+            // Bazel's old struct had built-in to_proto()/to_json() methods; the spec's struct has fields only.
+            "The attribute `to_proto` is not available on the type `struct(",
+            "The attribute `to_json` is not available on the type `struct(",
         };
         int files = 0, unexpected = 0;
         var report = new List<string>();

@@ -78,6 +78,8 @@ public sealed class TypeChecker
     {
         var c = new TypeChecker(ast.CodeMap, isPredeclared ?? (_ => false), predeclaredTypes ?? new Dictionary<string, Ty>());
         var module = new Scope(null);
+        // Types first (a function may annotate with a record defined further down), then signatures.
+        c.CollectDefinitions(ast.Statement, module);
         c.CollectSignatures(ast.Statement, module);
         c.Stmt(ast.Statement, module);
         return new TypeCheckResult
@@ -169,6 +171,51 @@ public sealed class TypeChecker
 
     private readonly Dictionary<string, Ty> _aliases = [];
 
+    /// <summary>
+    /// What a name statically denotes as a <em>definition</em> rather than a value: a record type, an enum type.
+    /// These are what <c>R(...)</c> and <c>E(...)</c> construct from, and what annotations like <c>x: R</c> name.
+    /// </summary>
+    private abstract record Definition;
+    private sealed record RecordDef(Ty.RecordTy Type, IReadOnlyList<(string Name, Ty Type, bool HasDefault)> Fields) : Definition;
+    private sealed record EnumDef(Ty.Custom Type, IReadOnlyList<Ty> ValueTypes) : Definition;
+
+    private readonly Dictionary<string, Definition> _definitions = [];
+
+    /// <summary>Recognise <c>X = record(...)</c> / <c>X = enum(...)</c> and remember what <c>X</c> denotes.</summary>
+    private void CollectDefinition(string name, Expr value, Scope scope)
+    {
+        if (value is not CallExpr { Function: IdentExpr { Name: var fn } } call) return;
+
+        if (fn == "record")
+        {
+            var fields = new List<(string, Ty, bool)>();
+            foreach (var arg in call.Args)
+            {
+                if (arg is not NamedArgument n) return;   // record() takes named arguments only; the runtime reports it
+                // `field(T, default)` wraps a type with a default; a bare type has none.
+                if (n.Value is CallExpr { Function: IdentExpr { Name: "field" }, Args: var fargs } && fargs.Count >= 1)
+                {
+                    fields.Add((n.Name.Value, Annotation(fargs[0].Value, scope), fargs.Count >= 2));
+                }
+                else
+                {
+                    fields.Add((n.Name.Value, Annotation(n.Value, scope), false));
+                }
+            }
+            var identity = new object();
+            var recordTy = new Ty.RecordTy(name, identity, fields.Select(f => new KeyValuePair<string, Ty>(f.Item1, f.Item2)).ToList());
+            _definitions[name] = new RecordDef(recordTy, fields);
+            _aliases[name] = recordTy;
+        }
+        else if (fn == "enum")
+        {
+            var valueTys = call.Args.Select(a => Infer(a.Value, scope)).ToList();
+            var enumTy = new Ty.Custom(name, new object());
+            _definitions[name] = new EnumDef(enumTy, valueTys);
+            _aliases[name] = enumTy;
+        }
+    }
+
     private Ty Parametrized(Expr target, IReadOnlyList<Expr> args, Scope scope, Span span)
     {
         var baseTy = Annotation(target, scope);
@@ -202,6 +249,17 @@ public sealed class TypeChecker
     }
 
     // ---------------------------------------------------------------- signatures of user functions
+
+    /// <summary>First pass: `R = record(...)` and `E = enum(...)` define types that annotations and constructors refer to.</summary>
+    private void CollectDefinitions(Stmt stmt, Scope scope)
+    {
+        if (stmt is AssignStmt { Target: IdentTarget defId } defAssign)
+        {
+            CollectDefinition(defId.Ident.Name, defAssign.Value, scope);
+        }
+        // Function bodies hold locals, not module-level types.
+        if (stmt is not DefStmt) stmt.VisitStmt(s => CollectDefinitions(s, scope));
+    }
 
     private void CollectSignatures(Stmt stmt, Scope scope)
     {
@@ -510,10 +568,7 @@ public sealed class TypeChecker
                 return Ty.Union([Infer(ie.IfTrue, scope), Infer(ie.IfFalse, scope)]);
 
             case DotExpr dot:
-            {
-                var recv = Infer(dot.Target, scope);
-                return Ty.Any;
-            }
+                return Attribute(Infer(dot.Target, scope), dot.Field.Value, dot.Span);
 
             case IndexExpr ix:
                 return IndexResult(Infer(ix.Target, scope), Infer(ix.Index, scope), ix.Span);
@@ -557,6 +612,52 @@ public sealed class TypeChecker
         }
         return Approximate("unhandled expression " + e.GetType().Name, e.Span);
     }
+
+    /// <summary>
+    /// The type of <c>receiver.name</c> when it is not being called. Methods of built-in types are functions, so they
+    /// are <c>typing.Callable</c>; fields of structs, records and enums have the types we recorded for them.
+    /// </summary>
+    private Ty Attribute(Ty receiver, string name, Span span)
+    {
+        var results = new List<Ty>();
+        foreach (var r in Opts(receiver))
+        {
+            switch (r)
+            {
+                case Ty.AnyTy or Ty.NeverTy:
+                    results.Add(r);
+                    break;
+                case Ty.StructTy { Fields: null }:
+                    results.Add(Ty.Any);
+                    break;
+                case Ty.StructTy s:
+                    if (s.TryGet(name, out var sf)) results.Add(sf);
+                    else Unavailable(r, name, span);
+                    break;
+                case Ty.RecordTy rec:
+                    if (rec.TryGet(name, out var rf)) results.Add(rf);
+                    else Unavailable(r, name, span);
+                    break;
+                case Ty.Custom c when _definitions.Values.OfType<EnumDef>().Any(d => d.Type.Equals(c)):
+                    // A value of the enum has `.value` and `.index`.
+                    if (name == "value") results.Add(Ty.Union(_definitions.Values.OfType<EnumDef>().First(d => d.Type.Equals(c)).ValueTypes));
+                    else if (name == "index") results.Add(Ty.Int);
+                    else Unavailable(r, name, span);
+                    break;
+                default:
+                    // Methods and everything else we have no table for: the call site decides, and only calls check it.
+                    results.Add(HasMethod(r, name) ? Ty.Callable : Ty.Any);
+                    break;
+            }
+        }
+        return results.Count == 0 ? Ty.Never : Ty.Union(results);
+    }
+
+    private void Unavailable(Ty receiver, string name, Span span) =>
+        Error(span, $"The attribute `{name}` is not available on the type `{receiver}`");
+
+    private static bool HasMethod(Ty t, string name) =>
+        BuiltinSignatures.MethodResult(t, name, []) is not null;
 
     private Ty Unary(Expr whole, Expr operand, Scope scope, string op, Ty allowed)
     {
@@ -818,6 +919,24 @@ public sealed class TypeChecker
         {
             var recv = Infer(dot.Target, scope);
             var argTypes = pos.Select(p => p.Ty).ToList();
+
+            // `json.encode(x)`, `json.decode(s)`, `json.indent(s)`.
+            if (dot.Target is IdentExpr { Name: "json" } && !scope.TryGet("json", out _))
+            {
+                return JsonCall(dot.Field.Value, pos, call);
+            }
+            // `Color.values()` on an enum type.
+            if (dot.Target is IdentExpr enumName && _definitions.TryGetValue(enumName.Name, out var d) && d is EnumDef ed
+                && dot.Field.Value == "values")
+            {
+                return new Ty.ListTy(Ty.Union(ed.ValueTypes));
+            }
+            // A struct or record field holding a function: the attribute is checked, the result is unknown.
+            if (Opts(recv).Any(o => o is Ty.StructTy or Ty.RecordTy))
+            {
+                var field = Attribute(recv, dot.Field.Value, dot.Span);
+                return field is Ty.CallableTy { Result: { } fr } ? fr : Ty.Any;
+            }
             return BuiltinSignatures.MethodResult(recv, dot.Field.Value, argTypes) ?? Ty.Any;
         }
 
@@ -829,6 +948,19 @@ public sealed class TypeChecker
                 Error(call.Function.Span, $"Call to a non-callable type `{callee}`");
             }
             return Ty.Any;
+        }
+
+        // Constructors: `R(host='h', port=1)` builds a record, `E('A')` an enum value.
+        if (_definitions.TryGetValue(fn.Name, out var def) && !IsShadowedLocally(fn.Name, scope))
+        {
+            return Construct(def, pos, named, hasStar, call);
+        }
+
+        // `struct(a=1, b='x')` has the type `struct(a = int, b = str)`.
+        if (fn.Name == "struct" && !scope.TryGet("struct", out _) && !_functions.ContainsKey("struct"))
+        {
+            if (pos.Count > 0) Error(pos[0].Span, "Too many positional arguments");
+            return new Ty.StructTy(named.Select(n => new KeyValuePair<string, Ty>(n.Name, n.Ty)).ToList());
         }
 
         // A name bound locally to a non-callable value.
@@ -859,6 +991,92 @@ public sealed class TypeChecker
             return BuiltinSignatures.Result(fn.Name, argTys) ?? builtin.Result;
         }
         return BuiltinSignatures.Result(fn.Name, argTys) ?? Ty.Any;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="name"/> is bound in a scope nearer than the module, such as a parameter or a local.
+    /// The module scope has no parent, so only scopes that have one can shadow a module-level definition.
+    /// </summary>
+    private static bool IsShadowedLocally(string name, Scope scope)
+    {
+        for (var s = scope; s?.Parent is not null; s = s.Parent)
+        {
+            if (s.Vars.ContainsKey(name)) return true;
+        }
+        return false;
+    }
+
+    private Ty Construct(Definition def, List<(Ty Ty, Span Span)> pos, List<(string Name, Ty Ty, Span Span)> named,
+        bool hasStar, CallExpr call)
+    {
+        switch (def)
+        {
+            case RecordDef rd:
+            {
+                if (pos.Count > 0)
+                {
+                    // Reported once, as the single mistake it is; don't also list every field as missing.
+                    Error(pos[0].Span, "Too many positional arguments: records are constructed with named arguments only");
+                    return rd.Type;
+                }
+                var supplied = new HashSet<string>();
+                foreach (var (name, ty, span) in named)
+                {
+                    var f = rd.Fields.FirstOrDefault(x => x.Name == name);
+                    if (f.Name is null)
+                    {
+                        Error(span, $"Unexpected parameter named `{name}`");
+                        continue;
+                    }
+                    Expect(ty, f.Type, span);
+                    supplied.Add(name);
+                }
+                if (!hasStar)
+                {
+                    foreach (var f in rd.Fields.Where(f => !f.HasDefault && !supplied.Contains(f.Name)))
+                    {
+                        Error(call.Function.Span, $"Missing required parameter `{f.Name}`");
+                    }
+                }
+                return rd.Type;
+            }
+            case EnumDef ed:
+            {
+                if (pos.Count == 1)
+                {
+                    // The argument must be able to be one of the enum's values.
+                    Expect(pos[0].Ty, Ty.Union(ed.ValueTypes), pos[0].Span);
+                }
+                else if (!hasStar)
+                {
+                    Error(call.Function.Span, pos.Count == 0 ? "Missing required parameter `value`" : "Too many positional arguments");
+                }
+                return ed.Type;
+            }
+        }
+        return Ty.Any;
+    }
+
+    private Ty JsonCall(string name, List<(Ty Ty, Span Span)> pos, CallExpr call)
+    {
+        switch (name)
+        {
+            case "encode":
+                if (pos.Count != 1) Error(call.Function.Span, pos.Count == 0 ? "Missing required parameter `x`" : "Too many positional arguments");
+                return Ty.Str;
+            case "decode":
+                if (pos.Count < 1) Error(call.Function.Span, "Missing required parameter `x`");
+                else Expect(pos[0].Ty, Ty.Str, pos[0].Span);
+                // JSON can decode to any value.
+                return Ty.Any;
+            case "indent":
+                if (pos.Count < 1) Error(call.Function.Span, "Missing required parameter `s`");
+                else Expect(pos[0].Ty, Ty.Str, pos[0].Span);
+                return Ty.Str;
+            default:
+                Error(call.Function.Span, $"The attribute `{name}` is not available on the type `struct(encode = typing.Callable, decode = typing.Callable, indent = typing.Callable)`");
+                return Ty.Never;
+        }
     }
 
     private static bool IsBuiltinName(string n) => n is "list" or "tuple" or "set" or "dict" or "sorted" or "reversed" or "range"
