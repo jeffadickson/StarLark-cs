@@ -45,6 +45,18 @@ public sealed record Dialect
     /// <summary>Are <c>f"{expression}"</c> strings supported.</summary>
     public bool EnableFStrings { get; init; }
 
+    /// <summary>
+    /// Extension, not in the Starlark specification: <c>parallel_map</c>, <c>spawn</c> and <c>all_of</c> and the
+    /// <c>future</c> type, with deterministic results. See docs/futures-design.md.
+    /// </summary>
+    public bool EnableFutures { get; init; }
+
+    /// <summary>
+    /// Extension: also <c>future.done()</c> and <c>first_of</c>, whose results depend on thread scheduling. Only takes
+    /// effect together with <see cref="EnableFutures"/>.
+    /// </summary>
+    public bool EnableNondeterministicFutures { get; init; }
+
     /// <summary>Follow the Starlark language standard as much as possible.</summary>
     public static Dialect Standard => new();
 

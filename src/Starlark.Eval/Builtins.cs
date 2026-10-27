@@ -117,7 +117,10 @@ public static class Builtins
                 if (kv.Key == "sep") sep = kv.Value as string ?? throw Err.Param("sep", "string", kv.Value);
                 else throw new StarlarkException($"Unexpected parameter named `{kv.Key}` for call to `print`");
             }
-            it.Print(string.Join(sep, a.Select(Repr.Str)));
+            var line = string.Join(sep, a.Select(Repr.Str));
+            // A task's output is held back and printed by whoever collects it, so output order does not depend on scheduling.
+            if (ExecutionContext.Current is { Output: { } buffered }) buffered.Add(line);
+            else it.Print(line);
             return null;
         });
 

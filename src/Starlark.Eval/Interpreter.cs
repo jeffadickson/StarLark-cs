@@ -6,6 +6,7 @@ namespace Starlark.Eval;
 /// <summary>A lexical scope: a module, a function call, or a comprehension.</summary>
 internal sealed class Frame(Frame? parent, HashSet<string> locals, bool isModule)
 {
+    /// <summary>The frame this one is nested in, or null for a module frame.</summary>
     public Frame? Parent { get; } = parent;
 
     /// <summary>Every name bound in this block (known statically). A name in here but not in <see cref="Vars"/> is unassigned.</summary>
@@ -14,6 +15,12 @@ internal sealed class Frame(Frame? parent, HashSet<string> locals, bool isModule
     public bool IsModule { get; } = isModule;
     public Dictionary<string, object?> Vars { get; } = [];
     public object? ReturnValue { get; set; }
+
+    /// <summary>
+    /// Set when a module frame has finished executing and been frozen. A sealed frame is never written again, so it can
+    /// be read from any thread.
+    /// </summary>
+    public volatile bool Sealed;
 }
 
 /// <summary>An executed module: its global variables, frozen.</summary>
@@ -72,6 +79,28 @@ public sealed class StarFunction : ICallable
     public object? Call(Interpreter interp, IReadOnlyList<object?> args, IReadOnlyList<KeyValuePair<string, object?>> kwargs) =>
         Owner.CallFunction(this, args, kwargs);
 
+    /// <summary>
+    /// A copy of this function bound to a different closure frame, with its parameter defaults copied through
+    /// <paramref name="copyDefault"/>. Used to give a task a function that shares nothing with the running module.
+    /// </summary>
+    internal StarFunction WithClosure(Frame closure, Func<object?, object?> copyDefault) =>
+        new(Name, Decl, Params, Body, LambdaBody, Defaults.Select(copyDefault).ToArray(), closure, Locals, Owner, CodeMap)
+        {
+            ParamTypes = ParamTypes,
+            ReturnType = ReturnType,
+        };
+
+    /// <summary>The frame at the end of the closure chain: the module the function was defined in.</summary>
+    internal Frame ModuleFrame
+    {
+        get
+        {
+            var f = Closure;
+            while (f.Parent is not null) f = f.Parent;
+            return f;
+        }
+    }
+
     /// <summary>Freezing a function freezes its parameter defaults and the variables it captured.</summary>
     internal void FreezeContents()
     {
@@ -116,7 +145,32 @@ public sealed class Interpreter
     /// <summary>Text written by <c>print()</c>.</summary>
     public Action<string> Print { get; set; } = Console.WriteLine;
 
-    public Dialect Dialect { get; set; } = Dialect.Standard;
+    private Dialect _dialect = Dialect.Standard;
+
+    /// <summary>
+    /// The language features to accept. Setting a dialect that enables futures also defines <c>parallel_map</c>,
+    /// <c>spawn</c> and <c>all_of</c> (and <c>first_of</c> under the nondeterministic flag).
+    /// </summary>
+    public Dialect Dialect
+    {
+        get => _dialect;
+        set
+        {
+            _dialect = value;
+            if (value.EnableFutures) Futures.FutureBuiltins.Install(_universe, this);
+        }
+    }
+
+    /// <summary>Limits on the tasks a run may start. Only used when <see cref="Dialect.EnableFutures"/> is set.</summary>
+    public Futures.FutureLimits FutureLimits { get; set; } = new();
+
+    /// <summary>
+    /// Statistics of the most recent top-level run that started tasks (spawns, peak live futures, peak concurrency,
+    /// leaked tasks), or null if it started none.
+    /// </summary>
+    public Futures.RunStats? LastRunStats { get; private set; }
+
+    internal void RecordRun(Futures.RunStats stats) => LastRunStats = stats;
 
     /// <summary>
     /// The unit of string length, indexing and slicing. <see cref="StringElements.Utf16"/> (default) matches .NET
@@ -328,9 +382,11 @@ public sealed class Interpreter
         var names = Resolver.Resolve(ast, _universe.ContainsKey, AllowGlobalReassign);
         var frame = new Frame(null, names, isModule: true);
         // Budgets cover the outermost call, including every module it loads: a nested Execute reuses the context.
-        using var scope = ExecutionContext.EnterOrReuse(this);
+        using var scope = ExecutionContext.EnterRun(this);
         ExecStmt(ast.Statement, frame, ast.CodeMap);
+        if (scope.IsOutermost) Futures.FutureBuiltins.CheckAllCollected(Ctx);
         foreach (var v in frame.Vars.Values) Freezer.Freeze(v);
+        frame.Sealed = true;
         return new Module(frame.Vars);
     }
 
@@ -444,6 +500,10 @@ public sealed class Interpreter
 
     private void ExecLoad(LoadStmt l, Frame f)
     {
+        if (ExecutionContext.Current is { IsTask: true })
+        {
+            throw new StarlarkException("`load` cannot run inside a task");
+        }
         var module = LoadModule(l.Module.Value);
         foreach (var arg in l.Args)
         {
@@ -654,7 +714,7 @@ public sealed class Interpreter
     internal object? CallFunction(StarFunction fn, IReadOnlyList<object?> args, IReadOnlyList<KeyValuePair<string, object?>> kwargs)
     {
         // A function of a frozen module called from a thread that is not running a script gets its own run state.
-        using var scope = ExecutionContext.EnterOrReuse(this);
+        using var scope = ExecutionContext.EnterRun(this);
         var ctx = Ctx;
         if (ctx.Depth >= MaxCallDepth || !System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
         {
@@ -804,8 +864,10 @@ public sealed class Interpreter
     {
         if (callee is ICallable c)
         {
-            using var scope = ExecutionContext.EnterOrReuse(this);
-            return c.Call(this, args, kwargs ?? []);
+            using var scope = ExecutionContext.EnterRun(this);
+            var result = c.Call(this, args, kwargs ?? []);
+            if (scope.IsOutermost) Futures.FutureBuiltins.CheckAllCollected(Ctx);
+            return result;
         }
         throw new StarlarkException($"Operation `call()` not supported on type '{Types.Name(callee)}': not callable");
     }
