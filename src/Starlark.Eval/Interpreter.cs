@@ -109,8 +109,6 @@ public sealed class Interpreter
 
     private readonly Dictionary<string, object?> _universe = [];
     private readonly Dictionary<string, Module?> _moduleCache = [];
-    private readonly HashSet<object> _active = [];
-    private int _depth;
 
     /// <summary>Loads a module by the identifier given to <c>load()</c>: returns its source, or null if unknown.</summary>
     public Func<string, string?>? SourceLoader { get; set; }
@@ -152,22 +150,18 @@ public sealed class Interpreter
     /// </summary>
     public long MaxAllocatedBytes { get; set; }
 
-    private long _steps;
-    private long _deadlineTicks;
-    private int _executeNesting;
+    /// <summary>
+    /// Whether script code is running on the calling thread. False between calls: no run state is left behind on a
+    /// thread after <see cref="Execute(AstModule)"/>, <see cref="CallValue"/> or a function call returns.
+    /// </summary>
+    public static bool IsRunningScript => ExecutionContext.Current is not null;
+
+    /// <summary>The context of the run on the calling thread. Every evaluation path installs one before it runs script code.</summary>
+    private static ExecutionContext Ctx => ExecutionContext.Current
+        ?? throw new InvalidOperationException("No execution context is installed on this thread");
 
     /// <summary>Counts one unit of work and, every 1024 units, checks the time and cancellation budgets.</summary>
-    private void Step()
-    {
-        if (MaxSteps > 0 && ++_steps > MaxSteps)
-        {
-            throw new ExecutionLimitException("steps", $"Script exceeded the limit of {MaxSteps} steps");
-        }
-        if ((_steps & 1023) == 0 || MaxSteps == 0)
-        {
-            PollBudgets();
-        }
-    }
+    private static void Step() => Ctx.Step();
 
     /// <summary>
     /// Waits for a task returned by an asynchronous host function. The script stays synchronous: its thread blocks here
@@ -184,18 +178,19 @@ public sealed class Interpreter
     {
         try
         {
-            if (_deadlineTicks != 0)
+            var ctx = Ctx;
+            if (ctx.DeadlineTicks != 0)
             {
-                long ticksLeft = _deadlineTicks - System.Diagnostics.Stopwatch.GetTimestamp();
+                long ticksLeft = ctx.DeadlineTicks - System.Diagnostics.Stopwatch.GetTimestamp();
                 var left = TimeSpan.FromSeconds(Math.Max(0, (double)ticksLeft / System.Diagnostics.Stopwatch.Frequency));
-                if (!task.Wait(left, Cancellation))
+                if (!task.Wait(left, ctx.Token))
                 {
                     throw new ExecutionLimitException("time", $"Script exceeded the time limit of {Timeout}");
                 }
             }
             else
             {
-                task.Wait(Cancellation);
+                task.Wait(ctx.Token);
             }
         }
         catch (AggregateException e) when (e.InnerExceptions.Count == 1)
@@ -206,18 +201,6 @@ public sealed class Interpreter
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(inner).Throw();
             }
             throw new StarlarkException($"Host function failed: {inner.Message}");
-        }
-    }
-
-    private int _poll;
-
-    private void PollBudgets()
-    {
-        if (MaxSteps == 0 && (++_poll & 1023) != 0) return;
-        Cancellation.ThrowIfCancellationRequested();
-        if (_deadlineTicks != 0 && System.Diagnostics.Stopwatch.GetTimestamp() > _deadlineTicks)
-        {
-            throw new ExecutionLimitException("time", $"Script exceeded the time limit of {Timeout}");
         }
     }
 
@@ -344,35 +327,11 @@ public sealed class Interpreter
         }
         var names = Resolver.Resolve(ast, _universe.ContainsKey, AllowGlobalReassign);
         var frame = new Frame(null, names, isModule: true);
-        if (_executeNesting++ == 0)
-        {
-            // Budgets cover the outermost call, including every module it loads.
-            _steps = 0;
-            _deadlineTicks = Timeout is { } t
-                ? System.Diagnostics.Stopwatch.GetTimestamp() + (long)(t.TotalSeconds * System.Diagnostics.Stopwatch.Frequency)
-                : 0;
-        }
-        try
-        {
-            long previousBudget = MemoryBudget.Set(MaxAllocatedBytes);
-            try
-            {
-                using (Strings.Enter(StringElements))
-                {
-                    ExecStmt(ast.Statement, frame, ast.CodeMap);
-                }
-            }
-            finally
-            {
-                MemoryBudget.Set(previousBudget);
-            }
-            foreach (var v in frame.Vars.Values) Freezer.Freeze(v);
-            return new Module(frame.Vars);
-        }
-        finally
-        {
-            _executeNesting--;
-        }
+        // Budgets cover the outermost call, including every module it loads: a nested Execute reuses the context.
+        using var scope = ExecutionContext.EnterOrReuse(this);
+        ExecStmt(ast.Statement, frame, ast.CodeMap);
+        foreach (var v in frame.Vars.Values) Freezer.Freeze(v);
+        return new Module(frame.Vars);
     }
 
     /// <summary>Evaluate a single expression, e.g. <c>Eval("1 + 2")</c>.</summary>
@@ -382,7 +341,7 @@ public sealed class Interpreter
         var names = Resolver.Resolve(ast, _universe.ContainsKey, allowGlobalReassign: true);
         var frame = new Frame(null, names, isModule: true);
         var assign = (AssignStmt)ast.Statement;
-        using var _ = Strings.Enter(StringElements);
+        using var scope = ExecutionContext.EnterOrReuse(this);
         return EvalExpr(assign.Value, frame, ast.CodeMap);
     }
 
@@ -507,9 +466,10 @@ public sealed class Interpreter
         _moduleCache[id] = null; // mark as in progress, to detect cycles
         try
         {
-            var saved = (_depth, _active.ToArray());
-            _depth = 0;
-            _active.Clear();
+            var ctx = Ctx;
+            var saved = (ctx.Depth, Active: ctx.Active.ToArray());
+            ctx.Depth = 0;
+            ctx.Active.Clear();
             try
             {
                 var m = Execute(id, src);
@@ -518,9 +478,9 @@ public sealed class Interpreter
             }
             finally
             {
-                _depth = saved._depth;
-                _active.Clear();
-                foreach (var x in saved.Item2) _active.Add(x);
+                ctx.Depth = saved.Depth;
+                ctx.Active.Clear();
+                foreach (var x in saved.Active) ctx.Active.Add(x);
             }
         }
         catch
@@ -693,17 +653,20 @@ public sealed class Interpreter
 
     internal object? CallFunction(StarFunction fn, IReadOnlyList<object?> args, IReadOnlyList<KeyValuePair<string, object?>> kwargs)
     {
-        if (_depth >= MaxCallDepth || !System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
+        // A function of a frozen module called from a thread that is not running a script gets its own run state.
+        using var scope = ExecutionContext.EnterOrReuse(this);
+        var ctx = Ctx;
+        if (ctx.Depth >= MaxCallDepth || !System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
         {
             throw new StarlarkException("Maximum call depth exceeded");
         }
-        if (!_active.Add(fn.Decl))
+        if (!ctx.Active.Add(fn.Decl))
         {
             throw new StarlarkException($"Function `{fn.Name}` was called recursively: recursion is not allowed in Starlark");
         }
 
         var frame = new Frame(fn.Closure, fn.Locals, isModule: false);
-        _depth++;
+        ctx.Depth++;
         try
         {
             BindArguments(fn, args, kwargs, frame);
@@ -726,8 +689,8 @@ public sealed class Interpreter
         }
         finally
         {
-            _depth--;
-            _active.Remove(fn.Decl);
+            ctx.Depth--;
+            ctx.Active.Remove(fn.Decl);
         }
     }
 
@@ -841,7 +804,7 @@ public sealed class Interpreter
     {
         if (callee is ICallable c)
         {
-            using var _ = Strings.Enter(StringElements);
+            using var scope = ExecutionContext.EnterOrReuse(this);
             return c.Call(this, args, kwargs ?? []);
         }
         throw new StarlarkException($"Operation `call()` not supported on type '{Types.Name(callee)}': not callable");

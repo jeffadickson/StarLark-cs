@@ -128,7 +128,7 @@ public static class Interop
             }
             else if (parameters[i].ParameterType == typeof(CancellationToken))
             {
-                bound[i] = interp.Cancellation;
+                bound[i] = ExecutionContext.Current?.Token ?? interp.Cancellation;
                 set[i] = true;
             }
             else

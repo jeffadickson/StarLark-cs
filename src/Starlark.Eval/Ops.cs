@@ -431,7 +431,9 @@ public static class Ops
 
     private static IEnumerable<object?> IterLocked(Mutable m, Func<IEnumerable<object?>> source)
     {
-        m.BeginIter();
+        // A frozen value cannot change, so it needs no lock, and must not be written to: it may be shared between threads.
+        bool locked = !m.Frozen;
+        if (locked) m.BeginIter();
         try
         {
             foreach (var x in source())
@@ -441,7 +443,7 @@ public static class Ops
         }
         finally
         {
-            m.EndIter();
+            if (locked) m.EndIter();
         }
     }
 
