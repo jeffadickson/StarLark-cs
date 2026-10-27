@@ -165,4 +165,12 @@ public class InteropTests
     }
 
     public sealed class Node { public Node? Next { get; set; } }
+
+    /// <summary>An enum value converts to its string value when the host asks for a string.</summary>
+    [Fact]
+    public void EnumValuesConvertToHostStrings()
+    {
+        var m = New().Execute("t", "Kind = enum('a', 'b')\nk = Kind('b')\n");
+        Assert.Equal("b", Interop.FromStar(m.Globals["k"], typeof(string)));
+    }
 }

@@ -4,9 +4,17 @@
     <Project Path="src/Starlark.Syntax/Starlark.Syntax.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Starlark.Apps.Tests/Starlark.Apps.Tests.csproj" />
     <Project Path="tests/Starlark.Eval.Tests/Starlark.Eval.Tests.csproj" />
     <Project Path="tests/Starlark.Fuzz.Tests/Starlark.Fuzz.Tests.csproj" />
     <Project Path="tests/Starlark.Syntax.Tests/Starlark.Syntax.Tests.csproj" />
+  </Folder>
+  <Folder Name="/apps/">
+    <Project Path="apps/BuildRules/BuildRules.csproj" />
+    <Project Path="apps/ConfigInspector/ConfigInspector.csproj" />
+    <Project Path="apps/GameAI/GameAI.csproj" />
+    <Project Path="apps/PolicyEngine/PolicyEngine.csproj" />
+    <Project Path="apps/ReportPipeline/ReportPipeline.csproj" />
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/CoverageReport/CoverageReport.csproj" />

@@ -194,7 +194,7 @@ public static class Interop
         if (type.IsInstanceOfType(value) && !type.IsPrimitive) return value;
 
         if (type == typeof(bool)) return value is bool b ? b : throw Mismatch(value, type);
-        if (type == typeof(string)) return value as string ?? (value is StarUtf16 u ? u.Value : throw Mismatch(value, type));
+        if (type == typeof(string)) return value as string ?? (value is StarUtf16 u ? u.Value : value is StarEnumValue { Value: string ev } ? ev : throw Mismatch(value, type));
         if (type == typeof(char)) return value is string { Length: 1 } s ? s[0] : throw Mismatch(value, type);
         if (type == typeof(double) || type == typeof(float) || type == typeof(decimal))
         {
