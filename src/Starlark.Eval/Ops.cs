@@ -283,10 +283,10 @@ public static class Ops
         switch (a, b)
         {
             case (BigInteger x, BigInteger y): return x + y;
-            case (string x, string y): return x + y;
+            case (string x, string y): MemoryBudget.CheckElements((long)x.Length + y.Length, 2); return x + y;
             case (StarUtf16 x, StarUtf16 y): return new StarUtf16(x.Value + y.Value);
             case (StarBytes x, StarBytes y): return new StarBytes([.. x.Value, .. y.Value]);
-            case (StarList x, StarList y): return new StarList(x.Items.Concat(y.Items));
+            case (StarList x, StarList y): MemoryBudget.CheckElements((long)x.Count + y.Count, 8); return new StarList(x.Items.Concat(y.Items));
             case (StarTuple x, StarTuple y): return new StarTuple([.. x.Items, .. y.Items]);
         }
         if (IsNum(a) && IsNum(b)) return ToDouble(a) + ToDouble(b);
@@ -305,6 +305,13 @@ public static class Ops
     {
         if (n > int.MaxValue) throw new StarlarkException("Repetition count too large");
         int count = n < 0 ? 0 : (int)n;
+        switch (seq)
+        {
+            case string s0: MemoryBudget.CheckElements((long)s0.Length * count, 2); break;
+            case StarList l0: MemoryBudget.CheckElements((long)l0.Count * count, 8); break;
+            case StarTuple t0: MemoryBudget.CheckElements((long)t0.Items.Length * count, 8); break;
+            case StarBytes b0: MemoryBudget.CheckElements((long)b0.Value.Length * count, 1); break;
+        }
         switch (seq)
         {
             case StarUtf16 u:

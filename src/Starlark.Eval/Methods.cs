@@ -267,6 +267,7 @@ public static class Methods
             a.Done();
             var parts = Ops.Iterate(iterable).Select(x =>
                 x is string p ? p : throw Err.Param("elements", "string", x)).ToList();
+            MemoryBudget.CheckElements(parts.Sum(p => (long)p.Length) + (long)((string)self).Length * Math.Max(0, parts.Count - 1), 2);
             return string.Join((string)self, parts);
         };
 

@@ -104,30 +104,51 @@ public static class Interop
 
     /// <summary>Wraps a delegate as a named callable Starlark function, converting arguments and result.</summary>
     public static Builtin Wrap(string name, Delegate d) =>
-        new(name, (_, args, kwargs) => Invoke(d.Target, d.Method, args, kwargs, true));
+        new(name, (interp, args, kwargs) => Invoke(interp, d.Target, d.Method, args, kwargs, true));
 
     /// <summary>Wraps a delegate as a callable Starlark function, converting arguments and result.</summary>
     private static Builtin FromDelegate(Delegate d, bool snake) =>
-        new(d.Method.Name, (_, args, kwargs) => Invoke(d.Target, d.Method, args, kwargs, snake));
+        new(d.Method.Name, (interp, args, kwargs) => Invoke(interp, d.Target, d.Method, args, kwargs, snake));
 
-    private static object? Invoke(object? target, MethodBase method, IReadOnlyList<object?> args,
+    private static object? Invoke(Interpreter interp, object? target, MethodBase method, IReadOnlyList<object?> args,
         IReadOnlyList<KeyValuePair<string, object?>> kwargs, bool snake)
     {
         var parameters = method.GetParameters();
         var bound = new object?[parameters.Length];
         var set = new bool[parameters.Length];
-        if (args.Count > parameters.Length)
+
+        // An Interpreter or CancellationToken parameter is supplied by the host, not by the script.
+        var visible = new List<int>();
+        for (int i = 0; i < parameters.Length; i++)
         {
-            throw new StarlarkException($"Too many positional arguments to `{method.Name}`: got {args.Count}, want at most {parameters.Length}");
+            if (parameters[i].ParameterType == typeof(Interpreter))
+            {
+                bound[i] = interp;
+                set[i] = true;
+            }
+            else if (parameters[i].ParameterType == typeof(CancellationToken))
+            {
+                bound[i] = interp.Cancellation;
+                set[i] = true;
+            }
+            else
+            {
+                visible.Add(i);
+            }
         }
-        for (int i = 0; i < args.Count; i++)
+        if (args.Count > visible.Count)
         {
-            bound[i] = FromStar(args[i], parameters[i].ParameterType);
+            throw new StarlarkException($"Too many positional arguments to `{method.Name}`: got {args.Count}, want at most {visible.Count}");
+        }
+        for (int j = 0; j < args.Count; j++)
+        {
+            int i = visible[j];
+            bound[i] = FromStar(args[j], parameters[i].ParameterType);
             set[i] = true;
         }
         foreach (var (name, value) in kwargs)
         {
-            int index = Array.FindIndex(parameters, p => p.Name == name || (p.Name is not null && SnakeCase(p.Name) == name));
+            int index = visible.FirstOrDefault(i => parameters[i].Name == name || (parameters[i].Name is not null && SnakeCase(parameters[i].Name!) == name), -1);
             if (index < 0) throw new StarlarkException($"Unexpected parameter named `{name}` for call to `{method.Name}`");
             if (set[index]) throw new StarlarkException($"Parameter `{name}` was given twice in call to `{method.Name}`");
             bound[index] = FromStar(value, parameters[index].ParameterType);
@@ -144,7 +165,20 @@ public static class Interop
         }
         try
         {
-            return ToStar(method.Invoke(target, bound), snake);
+            var result = method.Invoke(target, bound);
+            if (result is ValueTask vt) result = vt.AsTask();
+            else if (result is not null && result.GetType() is { IsGenericType: true } rt
+                     && rt.GetGenericTypeDefinition() == typeof(ValueTask<>))
+            {
+                result = rt.GetMethod("AsTask")!.Invoke(result, null);
+            }
+            if (result is Task task)
+            {
+                interp.AwaitHostTask(task);
+                result = task.GetType().IsGenericType && task.GetType().GetProperty("Result") is { } p
+                    && p.PropertyType.Name != "VoidTaskResult" ? p.GetValue(task) : null;
+            }
+            return ToStar(result, snake);
         }
         catch (TargetInvocationException e) when (e.InnerException is not null)
         {
@@ -173,7 +207,7 @@ public static class Interop
         {
             var method = m;
             fields.Add(new(snakeCase ? SnakeCase(m.Name) : m.Name,
-                new Builtin(m.Name, (_, args, kwargs) => Invoke(target, method, args, kwargs, snakeCase))));
+                new Builtin(m.Name, (interp, args, kwargs) => Invoke(interp, target, method, args, kwargs, snakeCase))));
         }
         return new StarStruct(fields);
     }

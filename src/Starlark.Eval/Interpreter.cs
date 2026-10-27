@@ -144,6 +144,14 @@ public sealed class Interpreter
     /// <summary>Cancels a running script cooperatively; checked on the same schedule as <see cref="MaxSteps"/>.</summary>
     public CancellationToken Cancellation { get; set; }
 
+    /// <summary>
+    /// The largest single object (string, list, tuple, bytes) one operation may build, in bytes, or 0 for no limit.
+    /// It is checked before repetition, concatenation and <c>join</c> allocate, so <c>'x' * 10**9</c> fails at once.
+    /// Exceeding it throws <see cref="ExecutionLimitException"/> with <see cref="ExecutionLimitException.Limit"/> "memory".
+    /// It bounds each allocation, not the sum of all of them: combine it with <see cref="MaxSteps"/> and <see cref="Timeout"/>.
+    /// </summary>
+    public long MaxAllocatedBytes { get; set; }
+
     private long _steps;
     private long _deadlineTicks;
     private int _executeNesting;
@@ -158,6 +166,46 @@ public sealed class Interpreter
         if ((_steps & 1023) == 0 || MaxSteps == 0)
         {
             PollBudgets();
+        }
+    }
+
+    /// <summary>
+    /// Waits for a task returned by an asynchronous host function. The script stays synchronous: its thread blocks here
+    /// until the task completes (so the thread-bound <see cref="StringElements"/> mode stays valid), but the wait ends
+    /// early with <see cref="OperationCanceledException"/> when <see cref="Cancellation"/> is cancelled, or with
+    /// <see cref="ExecutionLimitException"/> when <see cref="Timeout"/> runs out.
+    /// </summary>
+    /// <remarks>
+    /// Do not run scripts that call asynchronous host functions on a thread with a single-threaded
+    /// <see cref="SynchronizationContext"/> (a UI thread): a task that needs that thread to finish would deadlock.
+    /// Run the script on a thread-pool thread instead, for example with <c>Task.Run</c>.
+    /// </remarks>
+    internal void AwaitHostTask(Task task)
+    {
+        try
+        {
+            if (_deadlineTicks != 0)
+            {
+                long ticksLeft = _deadlineTicks - System.Diagnostics.Stopwatch.GetTimestamp();
+                var left = TimeSpan.FromSeconds(Math.Max(0, (double)ticksLeft / System.Diagnostics.Stopwatch.Frequency));
+                if (!task.Wait(left, Cancellation))
+                {
+                    throw new ExecutionLimitException("time", $"Script exceeded the time limit of {Timeout}");
+                }
+            }
+            else
+            {
+                task.Wait(Cancellation);
+            }
+        }
+        catch (AggregateException e) when (e.InnerExceptions.Count == 1)
+        {
+            var inner = e.InnerExceptions[0];
+            if (inner is StarlarkException or ExecutionLimitException or OperationCanceledException)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(inner).Throw();
+            }
+            throw new StarlarkException($"Host function failed: {inner.Message}");
         }
     }
 
@@ -287,9 +335,17 @@ public sealed class Interpreter
         }
         try
         {
-            using (Strings.Enter(StringElements))
+            long previousBudget = MemoryBudget.Set(MaxAllocatedBytes);
+            try
             {
-                ExecStmt(ast.Statement, frame, ast.CodeMap);
+                using (Strings.Enter(StringElements))
+                {
+                    ExecStmt(ast.Statement, frame, ast.CodeMap);
+                }
+            }
+            finally
+            {
+                MemoryBudget.Set(previousBudget);
             }
             foreach (var v in frame.Vars.Values) Freezer.Freeze(v);
             return new Module(frame.Vars);
