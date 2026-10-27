@@ -1,0 +1,11 @@
+{
+  "stryker-config": {
+    "solution": "Starlark.slnx",
+    "test-projects": ["tests/Starlark.Eval.Tests/Starlark.Eval.Tests.csproj"],
+    "project": "Starlark.Eval.csproj",
+    "reporters": ["html", "markdown", "progress"],
+    "thresholds": { "high": 90, "low": 75, "break": 60 },
+    "mutation-level": "Standard",
+    "concurrency": 8
+  }
+}

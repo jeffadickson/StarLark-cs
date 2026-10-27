@@ -1,0 +1,364 @@
+[DOCUMENT]
+TITLE: Starlark for .NET - host interface
+VERSION: 0.1
+OPTIONS:
+  ENABLE_MID: True
+
+[GRAMMAR]
+ELEMENTS:
+- TAG: REQUIREMENT
+  FIELDS:
+  - TITLE: UID
+    TYPE: String
+    REQUIRED: True
+  - TITLE: STATUS
+    TYPE: SingleChoice(Draft, Active, Implemented, Open)
+    REQUIRED: True
+  - TITLE: TITLE
+    TYPE: String
+    REQUIRED: True
+  - TITLE: STATEMENT
+    TYPE: String
+    REQUIRED: True
+  - TITLE: VERIFICATION
+    TYPE: String
+    REQUIRED: False
+  - TITLE: COMMENT
+    TYPE: String
+    REQUIRED: False
+
+[FREETEXT]
+How a running .NET program (the host) embeds the interpreter and exchanges data and control with Starlark scripts. The
+host runs in-process. The comparable Rust interface is Evaluator, Module and the starlark_module macro. VERIFICATION
+names the xunit test that covers a requirement. STATUS Open marks work that is not done yet.
+[/FREETEXT]
+
+[SECTION]
+TITLE: Registering host functions and values
+
+[REQUIREMENT]
+UID: HOST-REG-001
+STATUS: Implemented
+TITLE: Typed function registration
+STATEMENT: >>>
+The interpreter shall let the host register a .NET delegate as a predeclared Starlark function, converting positional
+and named arguments to the delegate's parameter types and converting the result back, without hand-written argument
+handling.
+<<<
+VERIFICATION: InteropTests.TypedFunctionsNeedNoArgumentHandling
+
+[REQUIREMENT]
+UID: HOST-REG-002
+STATUS: Implemented
+TITLE: Parameter naming and defaults
+STATEMENT: >>>
+A registered function shall accept each parameter by its declared name or its snake_case form, shall honour C# default
+values for omitted parameters, and shall report a missing, unexpected, duplicate or excess argument as a Starlark error
+that names the parameter.
+<<<
+VERIFICATION: InteropTests.WrongArgumentTypesAreScriptErrors
+
+[REQUIREMENT]
+UID: HOST-REG-003
+STATUS: Implemented
+TITLE: Predeclared values
+STATEMENT: >>>
+The interpreter shall let the host predeclare any .NET value as a global visible to every module, converted by the
+value-mapping rules.
+<<<
+VERIFICATION: InteropTests.ObjectsBecomeStructsWithSnakeCaseFields
+
+[REQUIREMENT]
+UID: HOST-REG-004
+STATUS: Implemented
+TITLE: Exposing a host object
+STATEMENT: >>>
+The interpreter shall let the host expose an object as a struct whose public properties are fields (a snapshot) and
+whose public methods are live calls on that object, using snake_case names by default.
+<<<
+VERIFICATION: InteropTests.ExposedObjectsGetLiveMethods
+
+[REQUIREMENT]
+UID: HOST-REG-005
+STATUS: Open
+TITLE: Host-defined script-visible types
+STATEMENT: >>>
+The interpreter shall let the host define a named value type with its own operators, attributes, methods, equality,
+hashing and truthiness, so that it behaves as a built-in does (the Rust StarlarkValue trait).
+<<<
+
+[REQUIREMENT]
+UID: HOST-REG-006
+STATUS: Open
+TITLE: Opt-in exposure by attribute
+STATEMENT: >>>
+The host shall be able to mark which properties and methods of a class are visible to scripts, and members not marked
+shall be invisible.
+<<<
+
+[/SECTION]
+
+[SECTION]
+TITLE: Value mapping
+
+[REQUIREMENT]
+UID: HOST-MAP-001
+STATUS: Implemented
+TITLE: .NET to Starlark
+STATEMENT: >>>
+Conversion to Starlark shall map null to None, bool to bool, every integer type to int, float, double and decimal to
+float, string and char to str, enums to their names, byte arrays to bytes, dictionaries to dict, other sequences to
+list, value tuples to tuple, and delegates to callable functions. Any other object shall become a struct of its public
+readable properties, converted recursively.
+<<<
+VERIFICATION: InteropTests.NullablesAndPrimitivesRoundTrip
+
+[REQUIREMENT]
+UID: HOST-MAP-002
+STATUS: Implemented
+TITLE: Starlark to .NET
+STATEMENT: >>>
+Conversion from Starlark shall produce a requested .NET type, including nullable types, enums, arrays, lists, sets,
+dictionaries, and classes or records bound by constructor and settable property from a struct, record or string-keyed
+dict, matching the exact name or the snake_case form.
+<<<
+VERIFICATION: InteropTests.ScriptValuesBindToRecordsAndClasses
+
+[REQUIREMENT]
+UID: HOST-MAP-003
+STATUS: Implemented
+TITLE: Range-checked integers
+STATEMENT: >>>
+Converting a Starlark int to a fixed-width .NET integer type shall fail with a Starlark error when the value does not
+fit, and shall not wrap or throw a CLR exception.
+<<<
+VERIFICATION: InteropTests.WrongArgumentTypesAreScriptErrors
+
+[REQUIREMENT]
+UID: HOST-MAP-004
+STATUS: Implemented
+TITLE: Mismatches are Starlark errors
+STATEMENT: >>>
+A value that cannot be represented as the requested type, including None for a non-nullable value type and a missing
+required field, shall raise a StarlarkException naming the Starlark type and the .NET type or field.
+<<<
+VERIFICATION: InteropTests.MissingFieldsAreReported
+
+[REQUIREMENT]
+UID: HOST-MAP-005
+STATUS: Implemented
+TITLE: Cyclic host objects
+STATEMENT: >>>
+Converting a cyclic or excessively deep .NET object graph shall fail with a Starlark error and shall not overflow the
+stack.
+<<<
+VERIFICATION: InteropTests.CyclicObjectsAreRejectedNotLooped
+
+[REQUIREMENT]
+UID: HOST-MAP-006
+STATUS: Implemented
+TITLE: Host objects are snapshots and read-only to scripts
+STATEMENT: >>>
+A script shall not be able to modify a host object through a converted value. Changes the host makes after conversion
+shall not be visible to the script unless it is converted again.
+<<<
+VERIFICATION: InteropTests.ScriptsCannotChangeTheHostObject
+
+[REQUIREMENT]
+UID: HOST-MAP-007
+STATUS: Open
+TITLE: JSON shortcuts
+STATEMENT: >>>
+The host shall be able to pass a value to and from a script as JSON with one call each way, using the same field naming
+as the struct mapping.
+<<<
+
+[/SECTION]
+
+[SECTION]
+TITLE: Running scripts and reading results
+
+[REQUIREMENT]
+UID: HOST-RUN-001
+STATUS: Implemented
+TITLE: Execute and read globals
+STATEMENT: >>>
+The host shall be able to execute source text or a parsed module and read the resulting global bindings by name.
+<<<
+VERIFICATION: EvalTests
+
+[REQUIREMENT]
+UID: HOST-RUN-002
+STATUS: Implemented
+TITLE: Call script functions from the host
+STATEMENT: >>>
+The host shall be able to call a global script function by name with .NET arguments and receive a .NET result of a
+requested type.
+<<<
+VERIFICATION: InteropTests.CallingScriptFunctionsFromTheHost
+
+[REQUIREMENT]
+UID: HOST-RUN-003
+STATUS: Implemented
+TITLE: Module loading
+STATEMENT: >>>
+The host shall control what load() can read through a loader callback. An unknown module and a load cycle shall be
+script errors.
+<<<
+VERIFICATION: ExampleProgramTests
+
+[REQUIREMENT]
+UID: HOST-RUN-004
+STATUS: Open
+TITLE: Per-run host context
+STATEMENT: >>>
+A registered function shall be able to receive host state for the current run, the analogue of Evaluator.extra, without
+capturing it in a closure, so one registered function can serve many runs.
+<<<
+
+[REQUIREMENT]
+UID: HOST-RUN-005
+STATUS: Open
+TITLE: Asynchronous host functions
+STATEMENT: >>>
+The host shall be able to register a function returning Task, and a script shall be able to call it as if it were
+synchronous, with cancellation honoured.
+<<<
+
+[REQUIREMENT]
+UID: HOST-RUN-006
+STATUS: Open
+TITLE: Shareable frozen modules
+STATEMENT: >>>
+A module that has been loaded and frozen shall be callable from many threads at once without data races.
+<<<
+
+[/SECTION]
+
+[SECTION]
+TITLE: Errors and diagnostics
+
+[REQUIREMENT]
+UID: HOST-ERR-001
+STATUS: Implemented
+TITLE: Distinct failure kinds
+STATEMENT: >>>
+The host shall be able to tell apart a syntax error (StarlarkSyntaxException), a runtime error (StarlarkException), a
+resource limit (ExecutionLimitException) and cancellation (OperationCanceledException). A script shall not be able to
+catch the last two.
+<<<
+VERIFICATION: ExecutionLimitTests.LimitIsNotAScriptError
+
+[REQUIREMENT]
+UID: HOST-ERR-002
+STATUS: Implemented
+TITLE: Source locations
+STATEMENT: >>>
+Script errors shall carry the file, line, column and a snippet of the offending source, and shall also provide the bare
+message without the snippet.
+<<<
+VERIFICATION: TypeCheckerTests
+
+[REQUIREMENT]
+UID: HOST-ERR-003
+STATUS: Implemented
+TITLE: Host exceptions
+STATEMENT: >>>
+An exception thrown by a registered .NET function shall surface as a Starlark error naming the function. Limit and
+cancellation exceptions shall pass through unchanged.
+<<<
+VERIFICATION: InteropTests.HostExceptionsBecomeScriptErrorsAndLimitsPassThrough
+
+[REQUIREMENT]
+UID: HOST-ERR-004
+STATUS: Open
+TITLE: Script call stack
+STATEMENT: >>>
+A runtime error shall include the chain of script function calls (file, line, function) that led to it, available to the
+host as structured data.
+<<<
+
+[/SECTION]
+
+[SECTION]
+TITLE: Safety for untrusted scripts
+
+[REQUIREMENT]
+UID: HOST-SAFE-001
+STATUS: Implemented
+TITLE: Step limit
+STATEMENT: >>>
+The host shall be able to cap the number of statements and expressions a run evaluates. Exceeding the cap shall raise
+ExecutionLimitException, and the cap shall cover modules loaded during the run.
+<<<
+VERIFICATION: ExecutionLimitTests.StepLimitStopsALongLoop
+
+[REQUIREMENT]
+UID: HOST-SAFE-002
+STATUS: Implemented
+TITLE: Time limit and cancellation
+STATEMENT: >>>
+The host shall be able to cap wall-clock time and pass a CancellationToken. A running script shall stop promptly when
+either triggers.
+<<<
+VERIFICATION: ExecutionLimitTests.TimeoutStopsALongLoop
+
+[REQUIREMENT]
+UID: HOST-SAFE-003
+STATUS: Implemented
+TITLE: Bounded call depth
+STATEMENT: >>>
+Deep or unbounded recursion shall fail with a Starlark error and shall not crash the process.
+<<<
+VERIFICATION: ExampleProgramTests.03_recursion_is_an_error
+
+[REQUIREMENT]
+UID: HOST-SAFE-004
+STATUS: Open
+TITLE: Memory limit
+STATEMENT: >>>
+The host shall be able to cap the memory a run may allocate, for example by bounding the size of collections, strings
+and ranges that a script can build.
+<<<
+
+[REQUIREMENT]
+UID: HOST-SAFE-005
+STATUS: Open
+TITLE: Capability listing
+STATEMENT: >>>
+The host shall be able to list every name visible to a script before the run, so the exposed surface can be reviewed.
+<<<
+
+[REQUIREMENT]
+UID: HOST-SAFE-006
+STATUS: Open
+TITLE: No ambient authority
+STATEMENT: >>>
+With no host registrations, a script shall have no access to the file system, network, environment, clock or process.
+A test shall enumerate the default universe to prove it.
+<<<
+
+[/SECTION]
+
+[SECTION]
+TITLE: Static checking
+
+[REQUIREMENT]
+UID: HOST-CHK-001
+STATUS: Implemented
+TITLE: Check before run
+STATEMENT: >>>
+The host shall be able to type check a module without running it, and to refuse to run a module that fails the check.
+<<<
+VERIFICATION: TypeCheckerTests
+
+[REQUIREMENT]
+UID: HOST-CHK-002
+STATUS: Open
+TITLE: Checker knows host registrations
+STATEMENT: >>>
+The static checker shall use the .NET signatures of registered functions, exposed objects and predeclared values, so a
+call with a wrong argument type is reported before the run.
+<<<
+
+[/SECTION]

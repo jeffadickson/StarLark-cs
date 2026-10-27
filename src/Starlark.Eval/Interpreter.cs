@@ -178,6 +178,29 @@ public sealed class Interpreter
         Builtins.Install(_universe);
     }
 
+    /// <summary>
+    /// Predeclare a typed .NET function. Arguments are converted from Starlark values by parameter type (positional,
+    /// by name in snake_case or as declared, with C# defaults honoured) and the result is converted back, so
+    /// <c>it.Register("add", (int a, int b) =&gt; a + b)</c> needs no argument handling.
+    /// </summary>
+    public void Register(string name, Delegate function) => _universe[name] = Interop.Wrap(name, function);
+
+    /// <summary>Predeclare a host object as a struct: properties become fields and public methods become calls.</summary>
+    public void Expose(string name, object target) => _universe[name] = Interop.Expose(target);
+
+    /// <summary>Predeclare any .NET value, converted with <see cref="Interop.ToStar"/>.</summary>
+    public void DefineValue(string name, object? value) => _universe[name] = Interop.ToStar(value);
+
+    /// <summary>
+    /// Call a global function defined by a script (for example <c>def decide(order)</c>) from the host, converting
+    /// arguments with <see cref="Interop.ToStar"/> and the result to <typeparamref name="T"/>.
+    /// </summary>
+    public T Call<T>(Module module, string function, params object?[] args)
+    {
+        if (!module.TryGet(function, out var f)) throw new StarlarkException($"Module has no global named `{function}`");
+        return (T)Interop.FromStar(CallValue(f, args.Select(a => Interop.ToStar(a)).ToArray()), typeof(T))!;
+    }
+
     /// <summary>Predeclare a global visible in every module.</summary>
     public void Define(string name, object? value) => _universe[name] = value;
 
