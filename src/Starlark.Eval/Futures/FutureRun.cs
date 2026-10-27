@@ -19,6 +19,9 @@ public sealed record FutureLimits
     /// <summary>Steps charged to the spawner for each task started.</summary>
     public int SpawnStepCost { get; init; } = 1_000;
 
+    /// <summary>The most worker threads one run may ever create, whatever <see cref="MaxConcurrency"/> says.</summary>
+    public const int MaxWorkersCeiling = 64;
+
     /// <summary>How long a run waits for tasks to stop when it ends.</summary>
     public TimeSpan GracePeriod { get; init; } = TimeSpan.FromSeconds(5);
 }
@@ -34,10 +37,12 @@ internal sealed class FutureRun : IDisposable
 {
     private readonly object _gate = new();
     private readonly List<StarFuture> _live = [];
-    private readonly SemaphoreSlim _slots;
     private readonly CancellationTokenSource _cts;
-    private readonly Thread[] _workers;
+    private readonly CancellationToken _token;
+    private readonly List<Thread> _workers = [];
+    private readonly int _maxWorkers;
     private readonly BlockingCollection<Action> _queue = new();
+    private int _disposed;
     private bool _closing;
     private long _spawns;
     private int _peakLive;
@@ -50,17 +55,26 @@ internal sealed class FutureRun : IDisposable
         Interpreter = interpreter;
         Limits = limits;
         _cts = CancellationTokenSource.CreateLinkedTokenSource(parent);
-        _slots = new SemaphoreSlim(limits.MaxConcurrency);
-        // A dedicated, bounded set of threads: script tasks never use the shared thread pool, so a blocked task cannot
-        // starve the host, and tasks queue (rather than block the spawner) when every worker is busy.
-        _workers = Enumerable.Range(0, Math.Max(1, limits.MaxConcurrency)).Select(i =>
-            new Thread(WorkerLoop, 16 * 1024 * 1024) { IsBackground = true, Name = "starlark-task-" + i }).ToArray();
-        foreach (var w in _workers) w.Start();
+        _token = _cts.Token;   // read once: the source is disposed at teardown, but a late worker must never touch it
+        // A dedicated, bounded set of threads, started on demand: script tasks never use the shared thread pool, so a
+        // blocked task cannot starve the host, and tasks queue (rather than block the spawner) when every worker is busy.
+        _maxWorkers = Math.Clamp(limits.MaxConcurrency, 1, FutureLimits.MaxWorkersCeiling);
+    }
+
+    private void EnsureWorker(int queued)
+    {
+        lock (_gate)
+        {
+            if (_workers.Count >= _maxWorkers || _workers.Count >= queued + _running) return;
+            var thread = new Thread(WorkerLoop, 16 * 1024 * 1024) { IsBackground = true, Name = "starlark-task-" + _workers.Count };
+            _workers.Add(thread);
+            thread.Start();
+        }
     }
 
     public Interpreter Interpreter { get; }
     public FutureLimits Limits { get; }
-    public CancellationToken Token => _cts.Token;
+    public CancellationToken Token => _token;
 
     public RunStats Stats
     {
@@ -72,9 +86,23 @@ internal sealed class FutureRun : IDisposable
 
     private void WorkerLoop()
     {
-        foreach (var work in _queue.GetConsumingEnumerable())
+        // Nothing may escape this loop: an unhandled exception on a non-pool thread ends the whole process.
+        try
         {
-            work();
+            foreach (var work in _queue.GetConsumingEnumerable())
+            {
+                try
+                {
+                    work();
+                }
+                catch (Exception)
+                {
+                    // RunTask completes the future itself; anything reaching here is already recorded.
+                }
+            }
+        }
+        catch (Exception)
+        {
         }
     }
 
@@ -104,11 +132,12 @@ internal sealed class FutureRun : IDisposable
         parent.Charge(Limits.SpawnStepCost);
 
         // Each task gets a deterministic slice of what the spawner has left, and its own copy of the run state.
-        long slice = parent.SliceFor(taskCount);
-        var context = parent.ForTask(slice, _cts.Token);
+        long slice = taskCount > 1 ? parent.SliceFor(taskCount) : parent.SliceForSpawn(Limits.MaxLiveFutures);
+        var context = parent.ForTask(slice, _token);
         future.Context = context;
         future.Slice = slice;
         _queue.Add(() => RunTask(future, context, body));
+        EnsureWorker(_queue.Count);
         return future;
     }
 
@@ -118,9 +147,9 @@ internal sealed class FutureRun : IDisposable
         lock (_gate) _peakRunning = Math.Max(_peakRunning, now);
         try
         {
-            if (_cts.IsCancellationRequested)
+            if (_token.IsCancellationRequested)
             {
-                future.Complete(null, new OperationCanceledException(_cts.Token));
+                future.Complete(null, new OperationCanceledException(_token));
                 return;
             }
             using var scope = ExecutionContext.Enter(context);
@@ -131,8 +160,9 @@ internal sealed class FutureRun : IDisposable
             catch (Exception e)
             {
                 future.Complete(null, e);
-                // A limit or cancellation in any task ends the whole run, whether or not the script collects this future.
-                if (e is ExecutionLimitException or OperationCanceledException) Fail(e);
+                // A limit in any task ends the whole run, whether or not the script collects this future. A task's own
+                // cancellation (for example a host call timing out) only counts when it is the run being cancelled.
+                if (e is ExecutionLimitException || (e is OperationCanceledException && _token.IsCancellationRequested)) Fail(e);
             }
         }
         finally
@@ -146,7 +176,14 @@ internal sealed class FutureRun : IDisposable
     private void Fail(Exception e)
     {
         lock (_gate) _limitFailure ??= e;
-        _cts.Cancel();
+        try
+        {
+            _cts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // The run was torn down while this worker was still finishing: nothing is left to cancel.
+        }
     }
 
     /// <summary>The limit or cancellation that ended the run, if a task caused one.</summary>
@@ -179,21 +216,40 @@ internal sealed class FutureRun : IDisposable
     /// </summary>
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         List<StarFuture> pending;
+        Thread[] workers;
         lock (_gate)
         {
             _closing = true;
             pending = _live.ToList();
+            workers = _workers.ToArray();
         }
-        _cts.Cancel();
-        _queue.CompleteAdding();
-        var deadline = DateTime.UtcNow + Limits.GracePeriod;
-        foreach (var w in _workers)
+        try
         {
-            var left = deadline - DateTime.UtcNow;
-            if (left <= TimeSpan.Zero || !w.Join(left)) Interlocked.Increment(ref _leaked);
+            _cts.Cancel();
         }
+        catch (ObjectDisposedException)
+        {
+        }
+        _queue.CompleteAdding();
+        long graceTicks = (long)(Math.Min(Limits.GracePeriod.TotalSeconds, 3600) * System.Diagnostics.Stopwatch.Frequency);
+        long deadline = System.Diagnostics.Stopwatch.GetTimestamp() + graceTicks;
+        int stuck = 0;
+        foreach (var w in workers)
+        {
+            long left = deadline - System.Diagnostics.Stopwatch.GetTimestamp();
+            var span = TimeSpan.FromSeconds(Math.Max(0, (double)left / System.Diagnostics.Stopwatch.Frequency));
+            if (!w.Join(span) && w.IsAlive) stuck++;
+        }
+        lock (_gate) _leaked = stuck;
         foreach (var f in pending) f.Observe();
-        _cts.Dispose();
+        // A worker that did not stop still holds the token source and the queue: leave them for it, and let the
+        // finalizer reclaim them once it ends, rather than pulling them out from under it.
+        if (stuck == 0)
+        {
+            _cts.Dispose();
+            _queue.Dispose();
+        }
     }
 }

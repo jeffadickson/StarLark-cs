@@ -56,6 +56,8 @@ internal static class FutureBuiltins
                 throw new StarlarkException(
                     $"`{function}`: function `{f.Name}` captures variables of a function that is still running; " +
                     "define it at module level or pass the values as arguments");
+            case BoundMethod { Receiver: Mutable { Frozen: false } }:
+                throw new StarlarkException($"`{function}`: a method of a list, dict or set that can still change cannot run in a task: pass the values instead");
             case StarFunction or Builtin or BoundMethod:
                 return;
             case ICallable:
@@ -76,10 +78,20 @@ internal static class FutureBuiltins
         var owner = Owner("parallel_map");
         CheckCallable(fn, "parallel_map");
 
-        var list = Ops.ToList(items);
-        if (list.Count > owner.Interpreter.FutureLimits.MaxLiveFutures)
+        int cap = owner.Interpreter.FutureLimits.MaxLiveFutures;
+        // Check the size before building anything, so a huge range or a lazy source cannot exhaust memory first.
+        if (items is StarRange r && r.Count > cap)
         {
-            throw new ExecutionLimitException("futures", $"parallel_map over {list.Count} items exceeds the limit of {owner.Interpreter.FutureLimits.MaxLiveFutures}");
+            throw new ExecutionLimitException("futures", $"parallel_map over {r.Count} items exceeds the limit of {cap}");
+        }
+        var list = new List<object?>();
+        foreach (var item in Ops.Iterate(items))
+        {
+            if (list.Count >= cap)
+            {
+                throw new ExecutionLimitException("futures", $"parallel_map over more than {cap} items exceeds the limit");
+            }
+            list.Add(item);
         }
         var futures = new List<StarFuture>(list.Count);
         try
@@ -166,7 +178,6 @@ internal static class FutureBuiltins
         var seen = new Dictionary<object, object?>(ReferenceEqualityComparer.Instance);
         var copiedArgs = args.Select(a => Isolation.Copy(a, seen)).ToList();
         var copiedKwargs = kwargs.Select(kv => new KeyValuePair<string, object?>(kv.Key, Isolation.Copy(kv.Value, seen))).ToList();
-        MemoryBudget.CheckElements(seen.Count, 64);
 
         var interp = owner.Interpreter;
         // A module-level function runs against a private frozen snapshot of the globals it reads.
@@ -209,7 +220,10 @@ internal static class FutureBuiltins
     {
         if (owner.Spawned.Count == 0) return;
         int n = owner.Spawned.Count;
+        var limit = owner.Run?.LimitFailure;
         foreach (var f in owner.Spawned.ToList()) f.Abandon(owner);
+        // A limit hit by a task nobody collected is still a resource failure, not a mistake in the script.
+        if (limit is not null) throw StarFuture.Fresh(limit);
         throw new StarlarkException($"{n} future(s) were started but never collected: call get() or all_of() before the call ends");
     }
 }

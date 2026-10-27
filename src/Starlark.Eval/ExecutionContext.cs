@@ -50,6 +50,12 @@ internal sealed class ExecutionContext
     /// <summary>True for a task: it may not spawn, collect, or load.</summary>
     public bool IsTask { get; }
 
+    /// <summary>The most a single task may print, in bytes, before it is stopped.</summary>
+    public const long MaxTaskOutputBytes = 8 * 1024 * 1024;
+
+    /// <summary>Bytes printed so far by this task.</summary>
+    public long OutputBytes;
+
     /// <summary>Lines a task printed; the joiner prints them, in order, when it collects the task. Null outside a task.</summary>
     public List<string>? Output { get; }
 
@@ -73,17 +79,17 @@ internal sealed class ExecutionContext
         if (Steps > MaxSteps) throw new ExecutionLimitException("steps", $"Script exceeded the limit of {MaxSteps} steps");
     }
 
-    /// <summary>Returns steps that were reserved for a task but not used.</summary>
-    public void Refund(long steps)
-    {
-        if (MaxSteps > 0 && steps > 0) Steps = Math.Max(0, Steps - steps);
-    }
-
     /// <summary>
     /// A deterministic share of the remaining step budget for one of <paramref name="tasks"/> tasks (0 means no limit,
     /// so a limited run never hands out 0).
     /// </summary>
     public long SliceFor(int tasks) => MaxSteps > 0 ? Math.Max(1, Remaining / Math.Max(1, tasks)) : 0;
+
+    /// <summary>
+    /// The slice for a single <c>spawn</c>: a fixed fraction of what is left, so that many spawns together cannot be
+    /// handed more than the whole budget many times over. Each task is still charged only for what it uses, at join.
+    /// </summary>
+    public long SliceForSpawn(int maxLiveFutures) => SliceFor(Math.Max(2, maxLiveFutures));
 
     /// <summary>The context for a task with the given slice, sharing this run's deadline and the given token.</summary>
     public ExecutionContext ForTask(long slice, CancellationToken token) => new(this, slice, token);
@@ -116,6 +122,7 @@ internal sealed class ExecutionContext
     public HashSet<object> Active { get; private set; } = [];
 
     private int _poll;
+    private long _ticks;
 
     /// <summary>Tells the dispose protocol which context to clean up. Set by <see cref="Enter"/>.</summary>
 
@@ -126,16 +133,22 @@ internal sealed class ExecutionContext
         {
             throw new ExecutionLimitException("steps", $"Script exceeded the limit of {MaxSteps} steps");
         }
-        if ((Steps & 1023) == 0 || MaxSteps == 0)
+        if ((++_ticks & 1023) == 0)
         {
-            Poll();
+            PollNow();
         }
     }
 
     /// <summary>Throws if the run was cancelled or its deadline has passed.</summary>
     public void Poll()
     {
-        if (MaxSteps == 0 && (++_poll & 1023) != 0) return;
+        if ((++_poll & 1023) != 0) return;
+        PollNow();
+    }
+
+    /// <summary>Checks cancellation and the deadline now.</summary>
+    public void PollNow()
+    {
         Token.ThrowIfCancellationRequested();
         if (DeadlineTicks != 0 && System.Diagnostics.Stopwatch.GetTimestamp() > DeadlineTicks)
         {

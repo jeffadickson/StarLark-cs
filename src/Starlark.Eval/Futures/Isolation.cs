@@ -14,6 +14,8 @@ internal static class Isolation
     public static object? Copy(object? value, Dictionary<object, object?> seen, int depth = 0, bool freeze = false)
     {
         if (depth > 200) throw new StarlarkException("Cannot pass a value this deeply nested to a task");
+        // Each value copied costs one step and counts against the memory ceiling, so a huge argument cannot be copied for free.
+        ExecutionContext.Current?.Charge(1);
         switch (value)
         {
             case null or bool or string or System.Numerics.BigInteger or double or StarBytes or StarUtf16 or StarRange:
@@ -59,6 +61,8 @@ internal static class Isolation
                     var values = rec.Values.Select(x => Copy(x, seen, depth + 1, freeze)).ToArray();
                     return new StarRecord(rec.Type, values);
                 });
+            case BoundMethod { Receiver: Mutable { Frozen: false } }:
+                throw new StarlarkException("A method of a list, dict or set that can still change cannot be passed to a task: pass the values instead");
             case StarEnumValue or StarEnumType or StarRecordType or TypeValue or Builtin or BoundMethod:
                 return value;   // immutable, or a reference to immutable machinery
             case StarFunction f:

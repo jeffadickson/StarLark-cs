@@ -69,6 +69,8 @@ internal sealed class StarFuture : IHostValue
     public void Wait(ExecutionContext waiter)
     {
         if (_done.Task.IsCompleted) return;
+        // If another task has already ended the run (a limit, or cancellation), do not wait for this one.
+        if (_run.LimitFailure is not null) return;
         if (waiter.DeadlineTicks != 0)
         {
             long left = waiter.DeadlineTicks - System.Diagnostics.Stopwatch.GetTimestamp();
@@ -96,7 +98,8 @@ internal sealed class StarFuture : IHostValue
         _run.Collected(this);
         if (Context is { } task)
         {
-            owner.Refund(Slice - task.Steps);
+            // The task ran against its own slice; the parent pays for exactly what it used, in join (program) order.
+            owner.Charge(task.Steps);
             if (task.Output is { } lines)
             {
                 foreach (var line in lines) owner.Interpreter.Print(line);

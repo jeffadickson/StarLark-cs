@@ -119,7 +119,15 @@ public static class Builtins
             }
             var line = string.Join(sep, a.Select(Repr.Str));
             // A task's output is held back and printed by whoever collects it, so output order does not depend on scheduling.
-            if (ExecutionContext.Current is { Output: { } buffered }) buffered.Add(line);
+            if (ExecutionContext.Current is { Output: { } buffered } task)
+            {
+                task.OutputBytes += line.Length * 2L;
+                if (task.OutputBytes > ExecutionContext.MaxTaskOutputBytes)
+                {
+                    throw new ExecutionLimitException("memory", $"A task printed more than {ExecutionContext.MaxTaskOutputBytes} bytes");
+                }
+                buffered.Add(line);
+            }
             else it.Print(line);
             return null;
         });
