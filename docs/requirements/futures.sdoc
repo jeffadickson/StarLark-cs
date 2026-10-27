@@ -1,6 +1,6 @@
 [DOCUMENT]
 TITLE: Starlark for .NET - futures extension
-VERSION: 0.1
+VERSION: 0.2
 OPTIONS:
   ENABLE_MID: True
 
@@ -28,32 +28,48 @@ ELEMENTS:
     REQUIRED: False
 
 [FREETEXT]
-An opt-in extension that lets a script start work concurrently and collect the results. It is not part of the
-Starlark specification and is off unless the host enables the dialect flag. Standard programs behave identically with
-the flag off.
+An opt-in extension that lets a script run work concurrently and collect the results. It is not part of the Starlark
+specification and is off unless the host enables the dialect flag. Standard programs behave identically with the flag
+off. Revision 0.2 incorporates the findings of a four-way concurrency review (see docs/futures-design.md).
 [/FREETEXT]
 
 [SECTION]
-TITLE: Prerequisite
+TITLE: Prerequisites
 
 [REQUIREMENT]
 UID: FUT-PRE-001
 STATUS: Open
 TITLE: Per-call execution context
 STATEMENT: >>>
-The interpreter shall keep all per-run mutable state (step counter, deadline, call depth, recursion set, string
-element mode, memory budget) in an execution context created for each call, not in the Interpreter object, so that
-a frozen module can be called from many threads at once.
+The interpreter shall keep all per-run mutable state (step counter, deadline, call depth, active-recursion set, string
+element mode, memory budget, cancellation token, output buffer) in an execution context passed explicitly to each call
+and to each task, and shall hold no such state in thread-static or Interpreter fields, so that a frozen module can be
+called from many threads at once.
 <<<
-COMMENT: This is also the fix for HOST-RUN-006.
 
 [REQUIREMENT]
 UID: FUT-PRE-002
 STATUS: Open
 TITLE: Thread-safe frozen modules
 STATEMENT: >>>
-Calling functions of a frozen module concurrently from many threads shall produce the same results as calling them
-one at a time, shown by a stress test.
+Calling functions of a frozen module concurrently from many threads shall give the same results as calling them one at
+a time, shown by a stress test that includes shared frozen lists, dicts and sets iterated concurrently.
+<<<
+
+[REQUIREMENT]
+UID: FUT-PRE-003
+STATUS: Open
+TITLE: Frozen values are not written
+STATEMENT: >>>
+Iterating a frozen list, dict or set shall not write to it. No operation on a frozen value shall write any field of it.
+<<<
+
+[REQUIREMENT]
+UID: FUT-PRE-004
+STATUS: Open
+TITLE: No load or Execute inside a task
+STATEMENT: >>>
+load() and Interpreter.Execute shall not run inside a task. The module cache shall only be touched at module top level.
 <<<
 
 [/SECTION]
@@ -64,52 +80,113 @@ TITLE: Language
 [REQUIREMENT]
 UID: FUT-LANG-001
 STATUS: Open
-TITLE: Dialect flag
+TITLE: Dialect flags
 STATEMENT: >>>
-The names spawn, all_of and first_of and the future type shall exist only when the dialect flag EnableFutures is set.
+The names parallel_map, spawn and all_of and the future type shall exist only when the dialect flag EnableFutures is
+set. The names done and first_of shall exist only when the further flag EnableNondeterministicFutures is also set. With
+the flags off the names shall not resolve.
 <<<
 
 [REQUIREMENT]
 UID: FUT-LANG-002
 STATUS: Open
-TITLE: Spawning
+TITLE: parallel_map
 STATEMENT: >>>
-spawn(function, *args, **kwargs) shall start the call on another thread and return a future immediately.
+parallel_map(function, iterable) shall call function on each element, possibly on other threads, and return the
+results as a list in iteration order.
 <<<
 
 [REQUIREMENT]
 UID: FUT-LANG-003
 STATUS: Open
-TITLE: Collecting a result
+TITLE: spawn and get
 STATEMENT: >>>
-future.get() shall block until the call finishes and return its result, or raise the error the call raised, with the
-original source location. future.done() shall return a bool without blocking.
+spawn(function, *args, **kwargs) shall start the call and return a future immediately. future.get() shall block until
+the call finishes and return its result, or raise the error the call raised with its original source location, as a
+fresh exception on every call.
 <<<
 
 [REQUIREMENT]
 UID: FUT-LANG-004
 STATUS: Open
-TITLE: Waiting on several futures
+TITLE: all_of
 STATEMENT: >>>
-all_of(futures) shall return the results as a list in the order of the argument. first_of(futures) shall return the
-index and result of the first to finish and shall be documented as nondeterministic.
+all_of(futures) shall wait for every future and return the results as a list in argument order. If any call failed it
+shall raise the error of the lowest-index failed future after all have finished.
 <<<
 
 [REQUIREMENT]
 UID: FUT-LANG-005
 STATUS: Open
-TITLE: Isolation
+TITLE: Callable restriction
 STATEMENT: >>>
-Arguments shall be frozen when passed to spawn and the result frozen when it returns. A spawned function that mutates
-a value it captured shall fail with the usual frozen-value error, so tasks cannot race on data.
+The function passed to parallel_map or spawn shall be a builtin, a host function, or a top-level function of a loaded,
+frozen module. A function that captures variables of a live frame shall be rejected with an error that says so.
 <<<
 
 [REQUIREMENT]
 UID: FUT-LANG-006
 STATUS: Open
+TITLE: Isolation by copying
+STATEMENT: >>>
+Mutable arguments shall be deep-copied for the task, preserving aliasing among the arguments, and the caller's values
+shall not be frozen or otherwise changed. The task shall see a frozen snapshot of exactly the module-level values its
+function references. The result shall be frozen. No frame, binding or non-frozen value shall be shared between a task
+and any other thread.
+<<<
+
+[REQUIREMENT]
+UID: FUT-LANG-007
+STATUS: Open
 TITLE: Determinism
 STATEMENT: >>>
-Apart from first_of, the observable result of a program shall not depend on thread scheduling.
+The observable result of a program (return values, errors, printed output order and the step count charged) shall not
+depend on thread scheduling, except for deadline expiry and the nondeterministic profile (FUT-LANG-011).
+<<<
+
+[REQUIREMENT]
+UID: FUT-LANG-008
+STATUS: Open
+TITLE: Futures do not escape
+STATEMENT: >>>
+A future shall not be hashable, shall have no truth value, shall not be stored in a module global, shall not be
+returned from the function that created it, and shall not be passed to spawn or parallel_map. A future still pending
+when the spawning call or module ends shall be an error.
+<<<
+
+[REQUIREMENT]
+UID: FUT-LANG-009
+STATUS: Open
+TITLE: Task restrictions
+STATEMENT: >>>
+A task shall not call spawn, parallel_map, get or all_of, so the task graph has depth 1.
+<<<
+
+[REQUIREMENT]
+UID: FUT-LANG-010
+STATUS: Open
+TITLE: Recursion across tasks
+STATEMENT: >>>
+A task shall inherit the active-call set and depth of its spawner, so spawning a function that is already on the call
+stack is a recursion error.
+<<<
+
+[REQUIREMENT]
+UID: FUT-LANG-011
+STATUS: Open
+TITLE: Nondeterministic profile
+STATEMENT: >>>
+Under EnableNondeterministicFutures, future.done() shall return whether the call has finished without blocking, and
+first_of(futures) shall return the index and result of the first to finish. Both shall be documented as
+nondeterministic and shall charge steps.
+<<<
+
+[REQUIREMENT]
+UID: FUT-LANG-012
+STATUS: Open
+TITLE: Output order
+STATEMENT: >>>
+Output printed by a task shall be buffered and emitted when the task is joined, in index order.
 <<<
 
 [/SECTION]
@@ -120,27 +197,87 @@ TITLE: Host integration
 [REQUIREMENT]
 UID: FUT-HOST-001
 STATUS: Open
-TITLE: Host tasks as futures
+TITLE: Host tasks as futures by registration
 STATEMENT: >>>
-When futures are enabled, a registered host function that returns Task or Task of T shall return a future to the
-script without blocking, so a script can start several host operations and then collect them.
+A registered host function that returns Task shall return a future to the script only if registered with the AsFuture
+option. Otherwise it shall keep blocking the script thread as it does today.
 <<<
 
 [REQUIREMENT]
 UID: FUT-HOST-002
 STATUS: Open
-TITLE: Limits and cancellation
+TITLE: Shared deadline, token and slices
 STATEMENT: >>>
-A spawned call shall inherit the step, time and memory limits and the cancellation token of its parent, cancelling the
-parent shall cancel its tasks, and a future not collected by the end of the run shall be cancelled.
+All tasks of a run shall share the run's absolute deadline and a cancellation token linked to the run token. Each task
+shall receive a deterministic slice of the remaining step budget and shall be charged against the run's memory budget,
+and the parent shall be charged the steps actually used when the task is joined. A host function called from a task
+shall receive that task's token.
 <<<
 
 [REQUIREMENT]
 UID: FUT-HOST-003
 STATUS: Open
-TITLE: Concurrency cap
+TITLE: Concurrency cap that cannot deadlock
 STATEMENT: >>>
-The host shall be able to cap the number of tasks running at once for a run.
+The host shall be able to cap the number of tasks running at once for a run (default 4). The cap shall never block the
+spawning script, and tasks shall run on a dedicated bounded scheduler, not on the shared thread pool.
+<<<
+
+[REQUIREMENT]
+UID: FUT-HOST-004
+STATUS: Open
+TITLE: Spawn and future caps
+STATEMENT: >>>
+The host shall be able to cap total spawns per run (default 10,000) and live uncollected futures (default 1,000).
+Exceeding a cap shall raise ExecutionLimitException with Limit "tasks" or "futures". Each spawn shall charge steps
+(default 1,000).
+<<<
+
+[REQUIREMENT]
+UID: FUT-HOST-005
+STATUS: Open
+TITLE: Limit errors are never lost
+STATEMENT: >>>
+An ExecutionLimitException or cancellation in any task shall cancel the other tasks and fail the run with that
+exception, whether or not the script collected the future, and shall never be converted into a StarlarkException.
+<<<
+
+[REQUIREMENT]
+UID: FUT-HOST-006
+STATUS: Open
+TITLE: Teardown
+STATEMENT: >>>
+When a run ends (normally, by error, by cancellation or by disposal) the run shall stop accepting spawns, cancel its
+tasks, wait for them for a bounded grace period (default 5 s), observe every fault, and report tasks that did not stop.
+No UnobservedTaskException shall result.
+<<<
+
+[REQUIREMENT]
+UID: FUT-HOST-007
+STATUS: Open
+TITLE: Host operation caps
+STATEMENT: >>>
+The host shall be able to cap in-flight host operations started from tasks (default 8). Each Task-returning host call
+shall charge steps (default 100).
+<<<
+
+[REQUIREMENT]
+UID: FUT-HOST-008
+STATUS: Open
+TITLE: Thread-safety of host code
+STATEMENT: >>>
+Host values handed to a task shall be frozen or declared thread-safe, and the universe shall be frozen when futures are
+enabled. A host function shall be called concurrently only if registered as thread-safe; otherwise calls shall be
+serialised per run with deadline-aware waiting.
+<<<
+
+[REQUIREMENT]
+UID: FUT-HOST-009
+STATUS: Open
+TITLE: Run statistics
+STATEMENT: >>>
+Every run shall expose its counts of steps, spawns, peak live futures, peak concurrency, host calls and leaked tasks to
+the host.
 <<<
 
 [/SECTION]
@@ -153,8 +290,8 @@ UID: FUT-VER-001
 STATUS: Open
 TITLE: Equivalence property
 STATEMENT: >>>
-A property test shall show that, for generated programs, spawning a call and getting its result gives the same value
-(or the same error) as calling it inline.
+A property test shall show that, for generated programs, parallel_map and spawn/get give the same values, errors and
+printed output as calling the function inline, under randomized scheduling delays.
 <<<
 
 [REQUIREMENT]
@@ -162,7 +299,19 @@ UID: FUT-VER-002
 STATUS: Open
 TITLE: Checker support
 STATEMENT: >>>
-The static checker shall know the future type and the signatures of spawn, all_of and first_of when the flag is set.
+When the flag is set the static checker shall know the future type and type parallel_map as Callable[[T], U],
+Iterable[T] to list[U], and spawn, get and all_of with their result types.
+<<<
+
+[REQUIREMENT]
+UID: FUT-VER-003
+STATUS: Open
+TITLE: Review regressions
+STATEMENT: >>>
+Tests shall cover: a loop-captured lambda rejected or deterministic; a spawn that does not freeze the caller's locals;
+a spawn at module top level followed by more definitions; Utf8 mode and the memory limit inside tasks; the same function
+from many tasks; a fork bomb; a million-future list; a cap-saturation case; a host function that ignores its token; and
+a run under a single-thread synchronization context.
 <<<
 
 [/SECTION]
