@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <Content Include="Conformance\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="GoSuites\**\*" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\examples\programs\*.star" Link="Examples\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 

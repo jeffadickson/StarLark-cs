@@ -638,9 +638,9 @@ public static class Methods
     {
         var m = SetMethods;
 
-        m["add"] = (_, self, a) => { var x = a.Required("x"); a.Done(); ((StarSet)self).Add(x); return null; };
-        m["clear"] = (_, self, a) => { a.Done(); ((StarSet)self).Clear(); return null; };
-        m["discard"] = (_, self, a) => { var x = a.Required("x"); a.Done(); ((StarSet)self).Remove(x); return null; };
+        m["add"] = (_, self, a) => { var x = a.Required("x"); a.Done(); var s = (StarSet)self; if (s.Frozen && s.Contains(x)) return null; s.Add(x); return null; };
+        m["clear"] = (_, self, a) => { a.Done(); var s = (StarSet)self; if (s.Frozen && s.Count == 0) return null; s.Clear(); return null; };
+        m["discard"] = (_, self, a) => { var x = a.Required("x"); a.Done(); var s = (StarSet)self; if (s.Frozen && !s.Contains(x)) return null; s.Remove(x); return null; };
         m["remove"] = (_, self, a) =>
         {
             var x = a.Required("x");

@@ -353,7 +353,7 @@ public static class Builtins
             case double: return v;
             case BigInteger i:
             {
-                double d = (double)i;
+                double d = Ops.BigToDouble(i);
                 if (double.IsInfinity(d)) throw new StarlarkException("int too large to convert to float");
                 return d;
             }

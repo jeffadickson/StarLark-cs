@@ -11,11 +11,26 @@ public static class Ops
 
     private static bool IsNum(object? v) => v is BigInteger or double;
 
+    /// <summary>
+    /// Converts an int to the nearest double, rounding ties to even. <c>(double)BigInteger</c> truncates instead,
+    /// which disagrees with the reference implementations for values above 2^53.
+    /// </summary>
+    public static double BigToDouble(BigInteger i)
+    {
+        if (i >= long.MinValue && i <= long.MaxValue) return (double)(long)i;
+        var magnitude = BigInteger.Abs(i);
+        int shift = (int)magnitude.GetBitLength() - 64;
+        ulong top = (ulong)(magnitude >> shift);
+        if (!(magnitude & ((BigInteger.One << shift) - 1)).IsZero) top |= 1;   // sticky bit keeps ties-to-even exact
+        double r = shift > 1100 ? double.PositiveInfinity : Math.ScaleB((double)top, shift);
+        return i.Sign < 0 ? -r : r;
+    }
+
     private static double ToDouble(object? v)
     {
         if (v is double d) return d;
         var i = (BigInteger)v!;
-        double r = (double)i;
+        double r = BigToDouble(i);
         if (double.IsInfinity(r))
         {
             throw new StarlarkException("int too large to convert to float");

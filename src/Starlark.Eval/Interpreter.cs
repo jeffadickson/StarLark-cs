@@ -89,6 +89,18 @@ public sealed class StarFunction : ICallable
 /// A tree-walking Starlark interpreter. Each <see cref="Interpreter"/> holds the universe of predeclared
 /// names (builtins and host-defined values) and the module loader for <c>load()</c>.
 /// </summary>
+/// <remarks>
+/// <para>
+/// An instance is not thread-safe: use one per thread, or serialize calls. <see cref="Execute(AstModule)"/> runs
+/// synchronously on the calling thread and records <see cref="StringElements"/> in a thread-static for the duration
+/// of the call, so a host function must not hand control to another thread that evaluates Starlark values.
+/// Frozen values are immutable and may be shared between interpreters.
+/// </para>
+/// <para>
+/// For untrusted scripts set <see cref="MaxSteps"/>, <see cref="Timeout"/> and/or <see cref="Cancellation"/>.
+/// Call depth is already bounded.
+/// </para>
+/// </remarks>
 public sealed class Interpreter
 {
     private enum Flow { Normal, Break, Continue, Return }
@@ -119,6 +131,47 @@ public sealed class Interpreter
     /// (and tests that reuse names) do.
     /// </summary>
     public bool AllowGlobalReassign { get; set; }
+
+    /// <summary>
+    /// The most statements and expressions one <see cref="Execute(AstModule)"/> call may evaluate, or 0 for no limit.
+    /// Exceeding it throws <see cref="ExecutionLimitException"/>. This bounds runaway loops in untrusted scripts.
+    /// </summary>
+    public long MaxSteps { get; set; }
+
+    /// <summary>The longest one <see cref="Execute(AstModule)"/> call may run, or null for no limit.</summary>
+    public TimeSpan? Timeout { get; set; }
+
+    /// <summary>Cancels a running script cooperatively; checked on the same schedule as <see cref="MaxSteps"/>.</summary>
+    public CancellationToken Cancellation { get; set; }
+
+    private long _steps;
+    private long _deadlineTicks;
+    private int _executeNesting;
+
+    /// <summary>Counts one unit of work and, every 1024 units, checks the time and cancellation budgets.</summary>
+    private void Step()
+    {
+        if (MaxSteps > 0 && ++_steps > MaxSteps)
+        {
+            throw new ExecutionLimitException("steps", $"Script exceeded the limit of {MaxSteps} steps");
+        }
+        if ((_steps & 1023) == 0 || MaxSteps == 0)
+        {
+            PollBudgets();
+        }
+    }
+
+    private int _poll;
+
+    private void PollBudgets()
+    {
+        if (MaxSteps == 0 && (++_poll & 1023) != 0) return;
+        Cancellation.ThrowIfCancellationRequested();
+        if (_deadlineTicks != 0 && System.Diagnostics.Stopwatch.GetTimestamp() > _deadlineTicks)
+        {
+            throw new ExecutionLimitException("time", $"Script exceeded the time limit of {Timeout}");
+        }
+    }
 
     public Interpreter()
     {
@@ -174,12 +227,27 @@ public sealed class Interpreter
         }
         var names = Resolver.Resolve(ast, _universe.ContainsKey, AllowGlobalReassign);
         var frame = new Frame(null, names, isModule: true);
-        using (Strings.Enter(StringElements))
+        if (_executeNesting++ == 0)
         {
-            ExecStmt(ast.Statement, frame, ast.CodeMap);
+            // Budgets cover the outermost call, including every module it loads.
+            _steps = 0;
+            _deadlineTicks = Timeout is { } t
+                ? System.Diagnostics.Stopwatch.GetTimestamp() + (long)(t.TotalSeconds * System.Diagnostics.Stopwatch.Frequency)
+                : 0;
         }
-        foreach (var v in frame.Vars.Values) Freezer.Freeze(v);
-        return new Module(frame.Vars);
+        try
+        {
+            using (Strings.Enter(StringElements))
+            {
+                ExecStmt(ast.Statement, frame, ast.CodeMap);
+            }
+            foreach (var v in frame.Vars.Values) Freezer.Freeze(v);
+            return new Module(frame.Vars);
+        }
+        finally
+        {
+            _executeNesting--;
+        }
     }
 
     /// <summary>Evaluate a single expression, e.g. <c>Eval("1 + 2")</c>.</summary>
@@ -197,6 +265,7 @@ public sealed class Interpreter
 
     private Flow ExecStmt(Stmt stmt, Frame f, CodeMap cm)
     {
+        Step();
         try
         {
             return ExecStmtInner(stmt, f, cm);
@@ -657,6 +726,7 @@ public sealed class Interpreter
 
     private object? EvalExpr(Expr expr, Frame f, CodeMap cm)
     {
+        Step();
         try
         {
             return EvalInner(expr, f, cm);

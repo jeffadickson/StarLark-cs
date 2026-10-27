@@ -118,7 +118,7 @@ public static class StringFormat
     private static double ToFloat(object? v) => v switch
     {
         double d => d,
-        BigInteger i => (double)i,
+        BigInteger i => Ops.BigToDouble(i),
         _ => throw new StarlarkException($"Format requires a number, got '{Types.Name(v)}'"),
     };
 
