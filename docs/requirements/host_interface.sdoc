@@ -80,12 +80,13 @@ VERIFICATION: InteropTests.ExposedObjectsGetLiveMethods
 
 [REQUIREMENT]
 UID: HOST-REG-005
-STATUS: Open
+STATUS: Implemented
 TITLE: Host-defined script-visible types
 STATEMENT: >>>
 The interpreter shall let the host define a named value type with its own operators, attributes, methods, equality,
 hashing and truthiness, so that it behaves as a built-in does (the Rust StarlarkValue trait).
 <<<
+VERIFICATION: HostValueTests
 
 [REQUIREMENT]
 UID: HOST-REG-006
@@ -218,12 +219,13 @@ capturing it in a closure, so one registered function can serve many runs.
 
 [REQUIREMENT]
 UID: HOST-RUN-005
-STATUS: Open
+STATUS: Implemented
 TITLE: Asynchronous host functions
 STATEMENT: >>>
 The host shall be able to register a function returning Task, and a script shall be able to call it as if it were
 synchronous, with cancellation honoured.
 <<<
+VERIFICATION: AsyncHostTests
 
 [REQUIREMENT]
 UID: HOST-RUN-006
@@ -314,12 +316,13 @@ VERIFICATION: ExampleProgramTests.03_recursion_is_an_error
 
 [REQUIREMENT]
 UID: HOST-SAFE-004
-STATUS: Open
+STATUS: Implemented
 TITLE: Memory limit
 STATEMENT: >>>
 The host shall be able to cap the memory a run may allocate, for example by bounding the size of collections, strings
 and ranges that a script can build.
 <<<
+VERIFICATION: MemoryLimitTests
 
 [REQUIREMENT]
 UID: HOST-SAFE-005
@@ -360,5 +363,6 @@ STATEMENT: >>>
 The static checker shall use the .NET signatures of registered functions, exposed objects and predeclared values, so a
 call with a wrong argument type is reported before the run.
 <<<
+COMMENT: The checker now follows load() into host-supplied modules (TypecheckLoadTests), but registered functions are still typed typing.Any.
 
 [/SECTION]

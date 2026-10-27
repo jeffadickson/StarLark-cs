@@ -75,11 +75,12 @@ VERIFICATION: Starlark.Fuzz.Tests (PropertyTests)
 
 [REQUIREMENT]
 UID: QA-TST-005
-STATUS: Open
+STATUS: Implemented
 TITLE: FsCheck properties
 STATEMENT: >>>
 FsCheck properties shall complement the Hedgehog ones for the value model and the host interop conversions.
 <<<
+VERIFICATION: Starlark.Fuzz.Tests (InteropProperties)
 
 [REQUIREMENT]
 UID: QA-TST-006
