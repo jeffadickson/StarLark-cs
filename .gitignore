@@ -3,3 +3,4 @@ obj/
 coverage.md
 coverage.html
 TestResults/
+StrykerOutput/
