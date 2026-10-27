@@ -62,6 +62,9 @@ public sealed class TypeChecker
     /// <summary>Functions defined in the program, so calls can be checked against their signatures.</summary>
     private readonly Dictionary<string, Signature> _functions = [];
 
+    /// <summary>Signatures of host-registered functions, by name.</summary>
+    private IReadOnlyDictionary<string, Signature> _hostFunctions = new Dictionary<string, Signature>();
+
     private TypeChecker(CodeMap codemap, Func<string, bool> isPredeclared, IReadOnlyDictionary<string, Ty> predeclaredTypes)
     {
         _codemap = codemap;
@@ -74,9 +77,10 @@ public sealed class TypeChecker
     /// <paramref name="predeclaredTypes"/> gives their types where known (others are <c>typing.Any</c>).
     /// </summary>
     public static TypeCheckResult Check(AstModule ast, Func<string, bool>? isPredeclared = null,
-        IReadOnlyDictionary<string, Ty>? predeclaredTypes = null)
+        IReadOnlyDictionary<string, Ty>? predeclaredTypes = null, IReadOnlyDictionary<string, Signature>? hostFunctions = null)
     {
         var c = new TypeChecker(ast.CodeMap, isPredeclared ?? (_ => false), predeclaredTypes ?? new Dictionary<string, Ty>());
+        if (hostFunctions is not null) c._hostFunctions = hostFunctions;
         var module = new Scope(null);
         // Types first (a function may annotate with a record defined further down), then signatures.
         c.CollectDefinitions(ast.Statement, module);
@@ -935,6 +939,20 @@ public sealed class TypeChecker
             if (Opts(recv).Any(o => o is Ty.StructTy or Ty.RecordTy))
             {
                 var field = Attribute(recv, dot.Field.Value, dot.Span);
+                // A callable with known parameter types (a host method) checks the positional arguments it can see.
+                // Names and defaults are not part of the type, so named and missing arguments are not checked.
+                if (field is Ty.CallableTy { Params: { } known } && !hasStar)
+                {
+                    for (int i = 0; i < pos.Count; i++)
+                    {
+                        if (i >= known.Count)
+                        {
+                            Error(pos[i].Span, "Too many positional arguments");
+                            break;
+                        }
+                        Expect(pos[i].Ty, known[i], pos[i].Span);
+                    }
+                }
                 return field is Ty.CallableTy { Result: { } fr } ? fr : Ty.Any;
             }
             return BuiltinSignatures.MethodResult(recv, dot.Field.Value, argTypes) ?? Ty.Any;
@@ -977,6 +995,12 @@ public sealed class TypeChecker
         {
             CheckArguments(sig, pos, named, hasStar, call);
             return sig.Result;
+        }
+
+        if (_hostFunctions.TryGetValue(fn.Name, out var hostSig))
+        {
+            CheckArguments(hostSig, pos, named, hasStar, call);
+            return hostSig.Result;
         }
 
         if (!_isPredeclared(fn.Name) && !BuiltinSignatures.Functions.ContainsKey(fn.Name) && !IsBuiltinName(fn.Name))
@@ -1106,7 +1130,7 @@ public sealed class TypeChecker
 
         foreach (var (name, ty, span) in named)
         {
-            var p = ps.FirstOrDefault(x => x.Name == name && x.Mode is ParamMode.PosOrName or ParamMode.NameOnly);
+            var p = ps.FirstOrDefault(x => (x.Name == name || x.Alias == name) && x.Mode is ParamMode.PosOrName or ParamMode.NameOnly);
             if (p is null)
             {
                 var kw = ps.FirstOrDefault(x => x.Mode == ParamMode.Kwargs);

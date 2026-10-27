@@ -19,7 +19,11 @@ public enum ParamMode
     Kwargs,
 }
 
-public sealed record SigParam(string Name, ParamMode Mode, Ty Type, bool Required);
+public sealed record SigParam(string Name, ParamMode Mode, Ty Type, bool Required)
+{
+    /// <summary>A second accepted spelling of <see cref="Name"/> (the C# parameter name of a host function), or null.</summary>
+    public string? Alias { get; init; }
+}
 
 /// <summary>A function's type: its parameters and its result.</summary>
 public sealed record Signature(IReadOnlyList<SigParam> Params, Ty Result, string? Display = null)

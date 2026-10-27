@@ -1,0 +1,168 @@
+[DOCUMENT]
+TITLE: Starlark for .NET - futures extension
+VERSION: 0.1
+OPTIONS:
+  ENABLE_MID: True
+
+[GRAMMAR]
+ELEMENTS:
+- TAG: REQUIREMENT
+  FIELDS:
+  - TITLE: UID
+    TYPE: String
+    REQUIRED: True
+  - TITLE: STATUS
+    TYPE: SingleChoice(Draft, Active, Implemented, Open)
+    REQUIRED: True
+  - TITLE: TITLE
+    TYPE: String
+    REQUIRED: True
+  - TITLE: STATEMENT
+    TYPE: String
+    REQUIRED: True
+  - TITLE: VERIFICATION
+    TYPE: String
+    REQUIRED: False
+  - TITLE: COMMENT
+    TYPE: String
+    REQUIRED: False
+
+[FREETEXT]
+An opt-in extension that lets a script start work concurrently and collect the results. It is not part of the
+Starlark specification and is off unless the host enables the dialect flag. Standard programs behave identically with
+the flag off.
+[/FREETEXT]
+
+[SECTION]
+TITLE: Prerequisite
+
+[REQUIREMENT]
+UID: FUT-PRE-001
+STATUS: Open
+TITLE: Per-call execution context
+STATEMENT: >>>
+The interpreter shall keep all per-run mutable state (step counter, deadline, call depth, recursion set, string
+element mode, memory budget) in an execution context created for each call, not in the Interpreter object, so that
+a frozen module can be called from many threads at once.
+<<<
+COMMENT: This is also the fix for HOST-RUN-006.
+
+[REQUIREMENT]
+UID: FUT-PRE-002
+STATUS: Open
+TITLE: Thread-safe frozen modules
+STATEMENT: >>>
+Calling functions of a frozen module concurrently from many threads shall produce the same results as calling them
+one at a time, shown by a stress test.
+<<<
+
+[/SECTION]
+
+[SECTION]
+TITLE: Language
+
+[REQUIREMENT]
+UID: FUT-LANG-001
+STATUS: Open
+TITLE: Dialect flag
+STATEMENT: >>>
+The names spawn, all_of and first_of and the future type shall exist only when the dialect flag EnableFutures is set.
+<<<
+
+[REQUIREMENT]
+UID: FUT-LANG-002
+STATUS: Open
+TITLE: Spawning
+STATEMENT: >>>
+spawn(function, *args, **kwargs) shall start the call on another thread and return a future immediately.
+<<<
+
+[REQUIREMENT]
+UID: FUT-LANG-003
+STATUS: Open
+TITLE: Collecting a result
+STATEMENT: >>>
+future.get() shall block until the call finishes and return its result, or raise the error the call raised, with the
+original source location. future.done() shall return a bool without blocking.
+<<<
+
+[REQUIREMENT]
+UID: FUT-LANG-004
+STATUS: Open
+TITLE: Waiting on several futures
+STATEMENT: >>>
+all_of(futures) shall return the results as a list in the order of the argument. first_of(futures) shall return the
+index and result of the first to finish and shall be documented as nondeterministic.
+<<<
+
+[REQUIREMENT]
+UID: FUT-LANG-005
+STATUS: Open
+TITLE: Isolation
+STATEMENT: >>>
+Arguments shall be frozen when passed to spawn and the result frozen when it returns. A spawned function that mutates
+a value it captured shall fail with the usual frozen-value error, so tasks cannot race on data.
+<<<
+
+[REQUIREMENT]
+UID: FUT-LANG-006
+STATUS: Open
+TITLE: Determinism
+STATEMENT: >>>
+Apart from first_of, the observable result of a program shall not depend on thread scheduling.
+<<<
+
+[/SECTION]
+
+[SECTION]
+TITLE: Host integration
+
+[REQUIREMENT]
+UID: FUT-HOST-001
+STATUS: Open
+TITLE: Host tasks as futures
+STATEMENT: >>>
+When futures are enabled, a registered host function that returns Task or Task of T shall return a future to the
+script without blocking, so a script can start several host operations and then collect them.
+<<<
+
+[REQUIREMENT]
+UID: FUT-HOST-002
+STATUS: Open
+TITLE: Limits and cancellation
+STATEMENT: >>>
+A spawned call shall inherit the step, time and memory limits and the cancellation token of its parent, cancelling the
+parent shall cancel its tasks, and a future not collected by the end of the run shall be cancelled.
+<<<
+
+[REQUIREMENT]
+UID: FUT-HOST-003
+STATUS: Open
+TITLE: Concurrency cap
+STATEMENT: >>>
+The host shall be able to cap the number of tasks running at once for a run.
+<<<
+
+[/SECTION]
+
+[SECTION]
+TITLE: Verification
+
+[REQUIREMENT]
+UID: FUT-VER-001
+STATUS: Open
+TITLE: Equivalence property
+STATEMENT: >>>
+A property test shall show that, for generated programs, spawning a call and getting its result gives the same value
+(or the same error) as calling it inline.
+<<<
+
+[REQUIREMENT]
+UID: FUT-VER-002
+STATUS: Open
+TITLE: Checker support
+STATEMENT: >>>
+The static checker shall know the future type and the signatures of spawn, all_of and first_of when the flag is set.
+<<<
+
+[/SECTION]

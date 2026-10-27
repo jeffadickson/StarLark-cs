@@ -231,13 +231,32 @@ public sealed class Interpreter
     /// by name in snake_case or as declared, with C# defaults honoured) and the result is converted back, so
     /// <c>it.Register("add", (int a, int b) =&gt; a + b)</c> needs no argument handling.
     /// </summary>
-    public void Register(string name, Delegate function) => _universe[name] = Interop.Wrap(name, function);
+    public void Register(string name, Delegate function)
+    {
+        _universe[name] = Interop.Wrap(name, function);
+        _hostFunctions[name] = HostTypes.SignatureOf(name, function.Method);
+        _hostTypes.Remove(name);
+    }
 
     /// <summary>Predeclare a host object as a struct: properties become fields and public methods become calls.</summary>
-    public void Expose(string name, object target) => _universe[name] = Interop.Expose(target);
+    public void Expose(string name, object target)
+    {
+        _universe[name] = Interop.Expose(target);
+        _hostFunctions.Remove(name);
+        _hostTypes[name] = HostTypes.ForExposed(target);
+    }
 
     /// <summary>Predeclare any .NET value, converted with <see cref="Interop.ToStar"/>.</summary>
-    public void DefineValue(string name, object? value) => _universe[name] = Interop.ToStar(value);
+    public void DefineValue(string name, object? value)
+    {
+        _universe[name] = Interop.ToStar(value);
+        _hostFunctions.Remove(name);
+        if (value is not null && value is not IHostValue) _hostTypes[name] = HostTypes.ForResult(value.GetType(), 0);
+        else _hostTypes.Remove(name);
+    }
+
+    private readonly Dictionary<string, TypeCheck.Signature> _hostFunctions = [];
+    private readonly Dictionary<string, Ty> _hostTypes = [];
 
     /// <summary>
     /// Call a global function defined by a script (for example <c>def decide(order)</c>) from the host, converting
@@ -284,7 +303,7 @@ public sealed class Interpreter
 
     private TypeCheck.TypeCheckResult TypecheckWithLoads(AstModule ast, HashSet<string> seen)
     {
-        var result = TypeCheck.TypeChecker.Check(ast, _universe.ContainsKey);
+        var result = TypeCheck.TypeChecker.Check(ast, _universe.ContainsKey, _hostTypes, _hostFunctions);
         var errors = result.Errors.ToList();
         var approximations = result.Approximations.ToList();
         var loads = new List<string>();
