@@ -226,8 +226,35 @@ public sealed class Interpreter
         return Typecheck(ast);
     }
 
-    public TypeCheck.TypeCheckResult Typecheck(AstModule ast) =>
-        TypeCheck.TypeChecker.Check(ast, _universe.ContainsKey);
+    /// <summary>
+    /// Type checks a parsed module and every module it loads through <see cref="SourceLoader"/> (each once). Errors
+    /// from loaded modules carry their own <see cref="TypeCheck.TypeDiagnostic.CodeMap"/>, so snippets name the right
+    /// file. Names imported with <c>load()</c> are typed <c>typing.Any</c>. A module the loader cannot supply is left
+    /// for <see cref="Execute(AstModule)"/> to report.
+    /// </summary>
+    public TypeCheck.TypeCheckResult Typecheck(AstModule ast) => TypecheckWithLoads(ast, []);
+
+    private TypeCheck.TypeCheckResult TypecheckWithLoads(AstModule ast, HashSet<string> seen)
+    {
+        var result = TypeCheck.TypeChecker.Check(ast, _universe.ContainsKey);
+        var errors = result.Errors.ToList();
+        var approximations = result.Approximations.ToList();
+        var loads = new List<string>();
+        void Collect(Stmt s)
+        {
+            if (s is LoadStmt l) loads.Add(l.Module.Value);
+            s.VisitStmt(Collect);
+        }
+        Collect(ast.Statement);
+        foreach (var id in loads)
+        {
+            if (!seen.Add(id) || SourceLoader?.Invoke(id) is not { } source) continue;
+            var loaded = TypecheckWithLoads(AstModule.Parse(id, source, Dialect), seen);
+            errors.AddRange(loaded.Errors);
+            approximations.AddRange(loaded.Approximations);
+        }
+        return new TypeCheck.TypeCheckResult { Errors = errors, Approximations = approximations, Types = result.Types };
+    }
 
     /// <summary>
     /// When true, <see cref="Execute(AstModule)"/> type checks the module first and refuses to run it if the checker

@@ -58,6 +58,8 @@ public static class Interop
         {
             case null: return null;
             case bool or string or double or BigInteger: return value;
+            case IHostValue:
+                return value;   // a host-defined Starlark value
             case StarUtf16 or StarBytes or StarList or StarTuple or StarDict or StarSet or StarStruct or StarRecord
                 or StarEnumValue or StarRange or ICallable:
                 return value;   // already a Starlark value

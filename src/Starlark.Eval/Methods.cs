@@ -48,6 +48,7 @@ public static class Methods
 
     public static IEnumerable<string> Names(object? v) => v switch
     {
+        IHostValue h => h.Attributes(),
         StarStruct s => s.Fields.Select(f => f.Key),
         StarRecord r => r.Type.Fields.Select(f => f.Name),
         StarEnumValue => ["index", "value"],
@@ -57,6 +58,11 @@ public static class Methods
 
     public static bool TryGetAttr(object? target, string name, out object? value)
     {
+        if (target is IHostValue host)
+        {
+            return host.TryGetAttribute(name, out value);
+        }
+
         // Namespaces such as `json` and `typing` are structs, and user-defined records carry named fields: both expose them as attributes.
         if (target is StarStruct st && st.TryGet(name, out value))
         {

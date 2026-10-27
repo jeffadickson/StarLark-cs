@@ -62,6 +62,8 @@ public static class Ops
 
     public static bool Equal(object? a, object? b)
     {
+        if (a is IHostValue ha) return ha.EqualsValue(b);
+        if (b is IHostValue hb) return hb.EqualsValue(a);
         switch (a, b)
         {
             case (null, null): return true;
@@ -114,6 +116,8 @@ public static class Ops
     /// <summary>Three-way comparison; throws if the types are not orderable.</summary>
     public static int Compare(object? a, object? b, string op = "<")
     {
+        if (a is IHostValue ha && ha.CompareTo(b) is { } c1) return c1;
+        if (b is IHostValue hb && hb.CompareTo(a) is { } c2) return -c2;
         switch (a, b)
         {
             case (bool x, bool y): return x.CompareTo(y);
@@ -158,6 +162,12 @@ public static class Ops
 
     public static object? Binary(BinOp op, object? a, object? b)
     {
+        if (op is not (BinOp.Equal or BinOp.NotEqual or BinOp.In or BinOp.NotIn or BinOp.And or BinOp.Or
+            or BinOp.Less or BinOp.Greater or BinOp.LessOrEqual or BinOp.GreaterOrEqual))
+        {
+            if (a is IHostValue ha && ha.TryBinary(op, b, false, out var r1)) return r1;
+            if (b is IHostValue hb && hb.TryBinary(op, a, true, out var r2)) return r2;
+        }
         switch (op)
         {
             case BinOp.Equal: return Equal(a, b);
@@ -232,6 +242,11 @@ public static class Ops
 
     public static bool Contains(object? container, object? item)
     {
+        if (container is IHostValue hv)
+        {
+            if (hv.Contains(item) is { } found) return found;
+            if (hv.Iterate() is { } seq) return seq.Any(x => Equal(x, item));
+        }
         switch (container)
         {
             case string s:
@@ -368,6 +383,7 @@ public static class Ops
 
     public static object? Negate(object? v) => v switch
     {
+        IHostValue h when h.TryNegate(out var neg) => neg,
         BigInteger i => -i,
         double d => -d,
         _ => throw Err.UnsupportedUnary("-", v),
@@ -388,6 +404,7 @@ public static class Ops
     {
         switch (v)
         {
+            case IHostValue hv when hv.Iterate() is { } hostItems: return hostItems.Select(x => Interop.ToStar(x));
             case StarList l: return IterLocked(l, () => l.Items);
             case StarTuple t: return t.Items;
             case StarDict d: return IterLocked(d, () => d.Keys.ToList());
@@ -425,6 +442,7 @@ public static class Ops
 
     public static BigInteger Len(object? v) => v switch
     {
+        IHostValue { } h when h.Length() is { } n => n,
         string s => Strings.Len(s),
         StarUtf16 u => u.Value.Length,
         StarBytes b => b.Value.Length,
@@ -449,6 +467,11 @@ public static class Ops
 
     public static object? Index(object? target, object? index)
     {
+        if (target is IHostValue hv)
+        {
+            if (hv.TryIndex(index, out var item)) return item;
+            throw new StarlarkException($"Type '{hv.TypeName}' is not indexable");
+        }
         if (target is StarDict d)
         {
             if (d.TryGet(index, out var v)) return v;

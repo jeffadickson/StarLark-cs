@@ -285,6 +285,9 @@ public static class Freezer
             case Mutable m:
                 m.Freeze();
                 break;
+            case IHostValue h:
+                h.Freeze();
+                break;
             case StarTuple t:
                 foreach (var x in t.Items) Freeze(x);
                 break;
@@ -382,6 +385,7 @@ public static class Hashing
     {
         switch (v)
         {
+            case IHostValue h: return h.HashValue();
             case null: return 0;
             case bool b: return b ? 1231 : 1237;
             case BigInteger i: return i.GetHashCode();
@@ -415,6 +419,7 @@ public static class Types
 {
     public static string Name(object? v) => v switch
     {
+        IHostValue h => h.TypeName,
         null => "NoneType",
         bool => "bool",
         BigInteger => "int",
@@ -437,6 +442,7 @@ public static class Types
 
     public static bool Truthy(object? v) => v switch
     {
+        IHostValue h => h.Truthy(),
         null => false,
         bool b => b,
         BigInteger i => !i.IsZero,
@@ -522,6 +528,7 @@ public static class Repr
 
     public static string Of(object? v) => v switch
     {
+        IHostValue h => h.Repr(),
         null => "None",
         bool b => b ? "True" : "False",
         BigInteger i => i.ToString(),
