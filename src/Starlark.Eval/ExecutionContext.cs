@@ -197,8 +197,8 @@ internal sealed class ExecutionContext
             {
                 if (owned.Run is { } run && owned.OwnsRun)
                 {
+                    run.Dispose();   // counts workers that did not stop within the grace period
                     owned.Interpreter.RecordRun(run.Stats);
-                    run.Dispose();
                     owned.Run = null;
                     owned.OwnsRun = false;
                 }
