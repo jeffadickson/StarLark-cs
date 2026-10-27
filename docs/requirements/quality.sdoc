@@ -1,0 +1,216 @@
+[DOCUMENT]
+TITLE: Starlark for .NET - quality, tooling and delivery
+VERSION: 0.1
+OPTIONS:
+  ENABLE_MID: True
+
+[GRAMMAR]
+ELEMENTS:
+- TAG: REQUIREMENT
+  FIELDS:
+  - TITLE: UID
+    TYPE: String
+    REQUIRED: True
+  - TITLE: STATUS
+    TYPE: SingleChoice(Draft, Active, Implemented, Open)
+    REQUIRED: True
+  - TITLE: TITLE
+    TYPE: String
+    REQUIRED: True
+  - TITLE: STATEMENT
+    TYPE: String
+    REQUIRED: True
+  - TITLE: VERIFICATION
+    TYPE: String
+    REQUIRED: False
+  - TITLE: COMMENT
+    TYPE: String
+    REQUIRED: False
+
+[FREETEXT]
+How the project is tested, measured, documented and shipped.
+[/FREETEXT]
+
+[SECTION]
+TITLE: Testing
+
+[REQUIREMENT]
+UID: QA-TST-001
+STATUS: Implemented
+TITLE: Unit and conformance tests
+STATEMENT: >>>
+The repository shall contain xunit tests for the syntax and evaluation layers and the official conformance data, and
+all shall pass.
+<<<
+VERIFICATION: dotnet test
+
+[REQUIREMENT]
+UID: QA-TST-002
+STATUS: Implemented
+TITLE: Example programs as tests
+STATEMENT: >>>
+There shall be at least 50 example Starlark programs that state their expected output or error in comments and are
+executed by one parameterized test.
+<<<
+VERIFICATION: ExampleProgramTests.ThereAreFiftyOrMoreExamples
+
+[REQUIREMENT]
+UID: QA-TST-003
+STATUS: Implemented
+TITLE: Fuzzing
+STATEMENT: >>>
+Seeded fuzzers shall exercise the lexer, parser, interpreter and checker, with iteration count and seed settable by
+environment variable.
+<<<
+VERIFICATION: Starlark.Fuzz.Tests
+
+[REQUIREMENT]
+UID: QA-TST-004
+STATUS: Implemented
+TITLE: Property tests
+STATEMENT: >>>
+Hedgehog property tests with shrinking shall check invariants of the parser, interpreter and checker.
+<<<
+VERIFICATION: Starlark.Fuzz.Tests (PropertyTests)
+
+[REQUIREMENT]
+UID: QA-TST-005
+STATUS: Open
+TITLE: FsCheck properties
+STATEMENT: >>>
+FsCheck properties shall complement the Hedgehog ones for the value model and the host interop conversions.
+<<<
+
+[REQUIREMENT]
+UID: QA-TST-006
+STATUS: Open
+TITLE: Mutation testing
+STATEMENT: >>>
+Stryker.NET shall run against Starlark.Eval and Starlark.Syntax with the configuration in stryker-config.json, and the
+build shall fail below the break threshold.
+<<<
+COMMENT: Configuration is written; installing the dotnet tool was blocked and must be done by the user.
+
+[REQUIREMENT]
+UID: QA-TST-007
+STATUS: Open
+TITLE: Fourteen-hour soak
+STATEMENT: >>>
+A C# soak tool shall run the fuzzers and property tests in a loop for a configurable duration (default 14 hours), with
+a fresh seed per round, a wall-clock limit per input, failing inputs written to disk, periodic progress and memory
+logging, and the ability to resume.
+<<<
+
+[/SECTION]
+
+[SECTION]
+TITLE: Coverage
+
+[REQUIREMENT]
+UID: QA-COV-001
+STATUS: Implemented
+TITLE: Coverage report
+STATEMENT: >>>
+A C# tool shall merge Cobertura reports from all test projects and write Markdown and HTML summaries with per-file
+uncovered lines.
+<<<
+VERIFICATION: tools/CoverageReport
+
+[REQUIREMENT]
+UID: QA-COV-002
+STATUS: Open
+TITLE: Coverage targets
+STATEMENT: >>>
+Total line coverage shall be at least 96 percent, and Methods.cs, Values.cs and StringFormat.cs at least 95 percent each.
+<<<
+COMMENT: Currently 94.4 percent lines and 88.1 percent branches.
+
+[/SECTION]
+
+[SECTION]
+TITLE: Performance
+
+[REQUIREMENT]
+UID: QA-PERF-001
+STATUS: Implemented
+TITLE: Own benchmark
+STATEMENT: >>>
+A benchmark project shall measure lexer, parser and interpreter throughput.
+<<<
+VERIFICATION: bench/Starlark.Bench
+
+[REQUIREMENT]
+UID: QA-PERF-002
+STATUS: Open
+TITLE: Comparison with the Rust implementation
+STATEMENT: >>>
+Lexer and parser speed shall be compared with starlark-rust on the same inputs and the result recorded.
+<<<
+COMMENT: Needs a Rust toolchain, which is not installed.
+
+[/SECTION]
+
+[SECTION]
+TITLE: Documentation and packaging
+
+[REQUIREMENT]
+UID: QA-DOC-001
+STATUS: Implemented
+TITLE: Deviations
+STATEMENT: >>>
+Deliberate deviations from the specification and from the reference implementations, and the embedding limits, shall
+be recorded in docs/DEVIATIONS.md.
+<<<
+VERIFICATION: docs/DEVIATIONS.md
+
+[REQUIREMENT]
+UID: QA-DOC-002
+STATUS: Open
+TITLE: Embedding guide and example applications
+STATEMENT: >>>
+There shall be an embedding guide and runnable example applications that show host functions, object exposure, loading,
+limits, type checking and error reporting, with automated tests.
+<<<
+COMMENT: Five example applications are being written under apps/.
+
+[REQUIREMENT]
+UID: QA-DOC-003
+STATUS: Open
+TITLE: Requirements traceability
+STATEMENT: >>>
+Every Implemented requirement shall name a verifying test, and a check shall fail the build when a named test does not
+exist.
+<<<
+
+[REQUIREMENT]
+UID: QA-PKG-001
+STATUS: Open
+TITLE: NuGet packages
+STATEMENT: >>>
+Starlark.Syntax and Starlark.Eval shall build as NuGet packages with metadata, XML documentation and a README.
+<<<
+
+[REQUIREMENT]
+UID: QA-PKG-002
+STATUS: Open
+TITLE: Continuous integration
+STATEMENT: >>>
+A CI workflow shall build, test with coverage, enforce the coverage threshold and run mutation tests on a schedule.
+<<<
+
+[/SECTION]
+
+[SECTION]
+TITLE: Project conventions
+
+[REQUIREMENT]
+UID: QA-CON-001
+STATUS: Active
+TITLE: Language and tooling
+STATEMENT: >>>
+Helper programs shall be written in C#. Requirements shall be kept in StrictDoc. Code comments shall be XML
+documentation comments. Property testing shall use Hedgehog and FsCheck, and mutation testing Stryker.NET.
+<<<
+COMMENT: The test runner stays xunit by the owner's decision.
+
+[/SECTION]

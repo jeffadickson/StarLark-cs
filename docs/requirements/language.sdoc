@@ -1,0 +1,333 @@
+[DOCUMENT]
+TITLE: Starlark for .NET - language and library
+VERSION: 0.1
+OPTIONS:
+  ENABLE_MID: True
+
+[GRAMMAR]
+ELEMENTS:
+- TAG: REQUIREMENT
+  FIELDS:
+  - TITLE: UID
+    TYPE: String
+    REQUIRED: True
+  - TITLE: STATUS
+    TYPE: SingleChoice(Draft, Active, Implemented, Open)
+    REQUIRED: True
+  - TITLE: TITLE
+    TYPE: String
+    REQUIRED: True
+  - TITLE: STATEMENT
+    TYPE: String
+    REQUIRED: True
+  - TITLE: VERIFICATION
+    TYPE: String
+    REQUIRED: False
+  - TITLE: COMMENT
+    TYPE: String
+    REQUIRED: False
+
+[FREETEXT]
+What the lexer, parser, interpreter, type system and static checker shall do. The normative source is the Starlark
+language specification (starlark-spec/spec.md). Where this implementation chooses differently, the choice is recorded
+in docs/DEVIATIONS.md.
+[/FREETEXT]
+
+[SECTION]
+TITLE: Lexing and parsing
+
+[REQUIREMENT]
+UID: LANG-SYN-001
+STATUS: Implemented
+TITLE: Lexical grammar
+STATEMENT: >>>
+The lexer shall tokenize identifiers, keywords, integer literals (decimal, hexadecimal, octal and binary), float
+literals, string and bytes literals (single, double, triple-quoted, raw and escaped), operators and comments, and shall
+produce Indent and Dedent tokens from line indentation as Python does.
+<<<
+VERIFICATION: Starlark.Syntax.Tests
+
+[REQUIREMENT]
+UID: LANG-SYN-002
+STATUS: Implemented
+TITLE: Indentation errors
+STATEMENT: >>>
+The lexer shall reject tabs in indentation, inconsistent dedent, and unterminated strings with an error that carries
+the source span.
+<<<
+VERIFICATION: Starlark.Syntax.Tests
+
+[REQUIREMENT]
+UID: LANG-SYN-003
+STATUS: Implemented
+TITLE: Parser
+STATEMENT: >>>
+The parser shall build an abstract syntax tree for the whole Starlark grammar (statements, expressions, comprehensions,
+lambdas, slices, f-strings and type annotations when enabled) with correct operator precedence and with spans for
+every node.
+<<<
+VERIFICATION: Starlark.Syntax.Tests
+
+[REQUIREMENT]
+UID: LANG-SYN-004
+STATUS: Implemented
+TITLE: Dialect switches
+STATEMENT: >>>
+Optional syntax (top-level statements, f-strings, type annotations, positional-only and keyword-only parameters) shall
+be accepted only when its dialect flag is enabled, and rejected with a clear error otherwise.
+<<<
+VERIFICATION: Starlark.Syntax.Tests
+
+[REQUIREMENT]
+UID: LANG-SYN-005
+STATUS: Implemented
+TITLE: Termination on any input
+STATEMENT: >>>
+The lexer and parser shall terminate and either succeed or report an error for every input, including unterminated
+f-strings and random byte sequences.
+<<<
+VERIFICATION: Starlark.Fuzz.Tests
+
+[REQUIREMENT]
+UID: LANG-SYN-006
+STATUS: Implemented
+TITLE: Error message parity
+STATEMENT: >>>
+Syntax errors shall match the messages and positions of the reference starlark-rust golden files.
+<<<
+VERIFICATION: Starlark.Syntax.Tests (Goldens)
+
+[/SECTION]
+
+[SECTION]
+TITLE: Values and operators
+
+[REQUIREMENT]
+UID: LANG-VAL-001
+STATUS: Implemented
+TITLE: Data types
+STATEMENT: >>>
+The interpreter shall provide NoneType, bool, int (arbitrary precision), float (IEEE 754 double), string, bytes, list,
+tuple, dict (insertion ordered), set, range and function values with the semantics of the specification.
+<<<
+VERIFICATION: EvalTests, ConformanceTests
+
+[REQUIREMENT]
+UID: LANG-VAL-002
+STATUS: Implemented
+TITLE: Arithmetic
+STATEMENT: >>>
+Integer arithmetic shall be exact, with floored division and modulo; float arithmetic shall follow IEEE 754; mixed
+int and float operations and comparisons shall be exact; int to float conversion shall round to nearest, ties to even.
+<<<
+VERIFICATION: ExampleProgramTests (04-10), GoSuiteTests
+
+[REQUIREMENT]
+UID: LANG-VAL-003
+STATUS: Implemented
+TITLE: Equality, ordering and hashing
+STATEMENT: >>>
+Equality, ordering and hashing shall follow the specification: only hashable values are dict keys and set elements,
+int and float keys that are equal collide, and ordering of unorderable types is an error.
+<<<
+VERIFICATION: ExampleProgramTests (34-35, 56), GoSuiteTests
+
+[REQUIREMENT]
+UID: LANG-VAL-004
+STATUS: Implemented
+TITLE: Freezing and mutation
+STATEMENT: >>>
+Global values shall be frozen after a module finishes; mutating a frozen value, or a collection while it is being
+iterated, shall be an error.
+<<<
+VERIFICATION: ConformanceTests
+
+[REQUIREMENT]
+UID: LANG-VAL-005
+STATUS: Implemented
+TITLE: String element size
+STATEMENT: >>>
+String length, indexing and slicing shall use UTF-16 code units by default and UTF-8 bytes when selected by the host.
+A separate utf16 type shall be available as an extension.
+<<<
+VERIFICATION: Utf16TypeTests, StringElements tests
+
+[/SECTION]
+
+[SECTION]
+TITLE: Statements and functions
+
+[REQUIREMENT]
+UID: LANG-EXE-001
+STATUS: Implemented
+TITLE: Statements
+STATEMENT: >>>
+The interpreter shall execute assignment (including unpacking and augmented forms), if, for, break, continue, pass,
+return, def, lambda, load and expression statements.
+<<<
+VERIFICATION: ExampleProgramTests
+
+[REQUIREMENT]
+UID: LANG-EXE-002
+STATUS: Implemented
+TITLE: Scoping
+STATEMENT: >>>
+Name resolution shall be static with local, enclosing, global, predeclared and universal scopes. A global may not be
+rebound unless the host allows it, and a local used before assignment shall be an error.
+<<<
+VERIFICATION: ExampleProgramTests (41-45)
+
+[REQUIREMENT]
+UID: LANG-EXE-003
+STATUS: Implemented
+TITLE: Calls
+STATEMENT: >>>
+Calls shall support positional, named, default, *args and **kwargs parameters, with the specified errors for missing,
+duplicate and unexpected arguments. Recursion shall be rejected.
+<<<
+VERIFICATION: ExampleProgramTests (46-50)
+
+[REQUIREMENT]
+UID: LANG-EXE-004
+STATUS: Implemented
+TITLE: Comprehensions
+STATEMENT: >>>
+List and dict comprehensions, including nested for and if clauses, shall execute with their own scope.
+<<<
+VERIFICATION: ExampleProgramTests (30, 37)
+
+[/SECTION]
+
+[SECTION]
+TITLE: Built-in functions and methods
+
+[REQUIREMENT]
+UID: LANG-LIB-001
+STATUS: Implemented
+TITLE: Built-in functions
+STATEMENT: >>>
+All built-in functions of the specification shall be provided (abs, all, any, bool, bytes, dict, dir, enumerate, fail,
+float, getattr, hasattr, hash, int, len, list, max, min, print, range, repr, reversed, set, sorted, str, tuple, type,
+zip) with the specified argument and error behaviour.
+<<<
+VERIFICATION: ConformanceTests, ExampleProgramTests (64-70)
+
+[REQUIREMENT]
+UID: LANG-LIB-002
+STATUS: Implemented
+TITLE: String methods and formatting
+STATEMENT: >>>
+All string methods of the specification shall be provided, as well as percent formatting and the format method with
+the specified conversions and errors.
+<<<
+VERIFICATION: ExampleProgramTests (11-24)
+
+[REQUIREMENT]
+UID: LANG-LIB-003
+STATUS: Implemented
+TITLE: Container methods
+STATEMENT: >>>
+The methods of list, dict and set shall be provided with the specified results and errors.
+<<<
+VERIFICATION: ExampleProgramTests (25-40, 51-56)
+
+[REQUIREMENT]
+UID: LANG-LIB-004
+STATUS: Open
+TITLE: Bytes methods
+STATEMENT: >>>
+bytes shall provide the string-like methods of the specification beyond elems, once the specification defines them.
+<<<
+COMMENT: The specification marks these as TODO; see docs/DEVIATIONS.md.
+
+[REQUIREMENT]
+UID: LANG-LIB-005
+STATUS: Implemented
+TITLE: Conformance suites
+STATEMENT: >>>
+The implementation shall pass the Bazel, Go, Java and Rust conformance data, including the Go float and set suites,
+modulo the wording differences recorded in the harness.
+<<<
+VERIFICATION: ConformanceTests, GoSuiteTests
+
+[/SECTION]
+
+[SECTION]
+TITLE: Type system and extensions
+
+[REQUIREMENT]
+UID: LANG-TYP-001
+STATUS: Implemented
+TITLE: Annotations
+STATEMENT: >>>
+When types are enabled, parameter, return and variable annotations shall be checked at run time against int, str,
+bool, float, None, list[T], dict[K, V], tuple forms, unions, typing.Any, typing.Callable and user types, with
+messages that name the argument and the expected type.
+<<<
+VERIFICATION: TypeSystemTests, ExampleProgramTests (71-80)
+
+[REQUIREMENT]
+UID: LANG-TYP-002
+STATUS: Implemented
+TITLE: isinstance and type values
+STATEMENT: >>>
+isinstance and eval_type shall accept types as values, including parametrized and union types, and shall reject
+non-types.
+<<<
+VERIFICATION: TypeSystemTests
+
+[REQUIREMENT]
+UID: LANG-TYP-003
+STATUS: Implemented
+TITLE: Records, enums and structs
+STATEMENT: >>>
+record, field, enum and struct shall be provided, with typed fields, defaults, equality, repr, dir, indexing and
+iteration of enums, and errors for wrong or missing fields.
+<<<
+VERIFICATION: ExampleProgramTests (81-86)
+
+[REQUIREMENT]
+UID: LANG-TYP-004
+STATUS: Implemented
+TITLE: JSON module
+STATEMENT: >>>
+json.encode, json.decode and json.indent shall round-trip nested data including big integers and string escapes, and
+shall reject invalid input and cyclic structures.
+<<<
+VERIFICATION: JsonTests, ExampleProgramTests (87-90)
+
+[/SECTION]
+
+[SECTION]
+TITLE: Static checker
+
+[REQUIREMENT]
+UID: LANG-CHK-001
+STATUS: Implemented
+TITLE: Lenient checking
+STATEMENT: >>>
+The checker shall report an error only when it can prove two types cannot intersect, and shall never report an error for
+a program that runs correctly (no false positives on the conformance corpus).
+<<<
+VERIFICATION: TypeCheckerTests
+
+[REQUIREMENT]
+UID: LANG-CHK-002
+STATUS: Implemented
+TITLE: Struct, record, enum and json types
+STATEMENT: >>>
+The checker shall know the fields of structs and records, the members of enums, and the signatures of json functions,
+and shall report unknown attributes and wrongly typed arguments with the reference wording.
+<<<
+VERIFICATION: TypeCheckerPrecisionTests
+
+[REQUIREMENT]
+UID: LANG-CHK-003
+STATUS: Implemented
+TITLE: Agreement with the runtime
+STATEMENT: >>>
+A program the checker rejects for a type reason shall also fail at run time, checked by property tests.
+<<<
+VERIFICATION: Starlark.Fuzz.Tests (PropertyTests)
+
+[/SECTION]
