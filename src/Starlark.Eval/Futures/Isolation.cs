@@ -11,7 +11,7 @@ namespace Starlark.Eval.Futures;
 internal static class Isolation
 {
     /// <summary>Deep-copies <paramref name="value"/>. <paramref name="seen"/> maps originals to copies so aliasing survives.</summary>
-    public static object? Copy(object? value, Dictionary<object, object?> seen, int depth = 0)
+    public static object? Copy(object? value, Dictionary<object, object?> seen, int depth = 0, bool freeze = false)
     {
         if (depth > 200) throw new StarlarkException("Cannot pass a value this deeply nested to a task");
         switch (value)
@@ -24,8 +24,8 @@ internal static class Isolation
                 {
                     var copy = new StarList();
                     seen[l] = copy;
-                    foreach (var x in l.Items) copy.Add(Copy(x, seen, depth + 1));
-                    copy.Freeze();
+                    foreach (var x in l.Items) copy.Add(Copy(x, seen, depth + 1, freeze));
+                    if (freeze) copy.Freeze();
                     return copy;
                 });
             case StarDict d:
@@ -34,8 +34,8 @@ internal static class Isolation
                 {
                     var copy = new StarDict();
                     seen[d] = copy;
-                    foreach (var kv in d.Entries) copy.Set(Copy(kv.Key, seen, depth + 1), Copy(kv.Value, seen, depth + 1));
-                    copy.Freeze();
+                    foreach (var kv in d.Entries) copy.Set(Copy(kv.Key, seen, depth + 1, freeze), Copy(kv.Value, seen, depth + 1, freeze));
+                    if (freeze) copy.Freeze();
                     return copy;
                 });
             case StarSet s:
@@ -44,19 +44,19 @@ internal static class Isolation
                 {
                     var copy = new StarSet();
                     seen[s] = copy;
-                    foreach (var x in s.Items) copy.Add(Copy(x, seen, depth + 1));
-                    copy.Freeze();
+                    foreach (var x in s.Items) copy.Add(Copy(x, seen, depth + 1, freeze));
+                    if (freeze) copy.Freeze();
                     return copy;
                 });
             case StarTuple t:
-                return Remember(t, seen, () => new StarTuple(t.Items.Select(x => Copy(x, seen, depth + 1)).ToArray()));
+                return Remember(t, seen, () => new StarTuple(t.Items.Select(x => Copy(x, seen, depth + 1, freeze)).ToArray()));
             case StarStruct st:
                 return Remember(st, seen, () =>
-                    new StarStruct(st.Fields.Select(kv => new KeyValuePair<string, object?>(kv.Key, Copy(kv.Value, seen, depth + 1))).ToList()));
+                    new StarStruct(st.Fields.Select(kv => new KeyValuePair<string, object?>(kv.Key, Copy(kv.Value, seen, depth + 1, freeze))).ToList()));
             case StarRecord rec:
                 return Remember(rec, seen, () =>
                 {
-                    var values = rec.Values.Select(x => Copy(x, seen, depth + 1)).ToArray();
+                    var values = rec.Values.Select(x => Copy(x, seen, depth + 1, freeze)).ToArray();
                     return new StarRecord(rec.Type, values);
                 });
             case StarEnumValue or StarEnumType or StarRecordType or TypeValue or Builtin or BoundMethod:
@@ -135,13 +135,13 @@ internal static class Isolation
         var module = fn.ModuleFrame;
         var free = FreeNames(fn);
         var frame = new Frame(null, module.Locals, isModule: true);
-        var copy = fn.WithClosure(frame, d => Copy(d, seen));
+        var copy = fn.WithClosure(frame, d => Copy(d, seen, 0, freeze: true));
         seen[fn] = copy;   // before following references, so functions that call each other terminate
         foreach (var name in free)
         {
             if (module.Locals.Contains(name) && module.Vars.TryGetValue(name, out var value))
             {
-                frame.Vars[name] = value is StarFunction other ? Snapshot(other, seen) : Copy(value, seen);
+                frame.Vars[name] = value is StarFunction other ? Snapshot(other, seen) : Copy(value, seen, 0, freeze: true);
             }
         }
         frame.Sealed = true;

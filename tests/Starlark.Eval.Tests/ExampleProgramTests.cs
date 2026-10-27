@@ -9,7 +9,7 @@ namespace Starlark.Eval.Tests;
 /// as a test: header comments say how to run it, and trailing comments say what it must print or how it must fail.
 /// <code>
 /// # title: what the program shows
-/// # dialect: types, fstrings, positional-only, keyword-only   (optional; features to enable)
+/// # dialect: types, fstrings, positional-only, keyword-only, futures   (optional; features to enable)
 /// # elements: utf8                                              (optional; default utf16)
 /// # reassign: yes                                               (optional; allow rebinding globals)
 /// # typecheck: errors N                                         (optional; also run the static checker)
@@ -62,6 +62,8 @@ public class ExampleProgramTests
                 "fstrings" => d with { EnableFStrings = true },
                 "positional-only" => d with { EnablePositionalOnlyArguments = true },
                 "keyword-only" => d with { EnableKeywordOnlyArguments = true },
+                "futures" => d with { EnableFutures = true },
+                "nondeterministic-futures" => d with { EnableFutures = true, EnableNondeterministicFutures = true },
                 _ => throw new InvalidOperationException($"{ex.Name}: unknown dialect feature '{feature}'"),
             };
         }

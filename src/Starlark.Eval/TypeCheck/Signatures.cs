@@ -49,6 +49,9 @@ public static class BuiltinSignatures
     public static readonly IReadOnlyDictionary<string, Signature> Functions = new Dictionary<string, Signature>
     {
         ["abs"] = S(Num, P("x", Num)),
+        ["parallel_map"] = S(new Ty.ListTy(Ty.Any), P("function", Ty.Callable), P("iterable", IterAny)),
+        ["all_of"] = S(new Ty.ListTy(Ty.Any), P("futures", IterAny)),
+        ["spawn"] = S(new Ty.Name("future"), P("function", Ty.Callable), Rest(Anything), new SigParam("kwargs", ParamMode.Kwargs, Anything, false)),
         ["all"] = S(Ty.Bool, P("x", IterAny)),
         ["any"] = S(Ty.Bool, P("x", IterAny)),
         ["bool"] = S(Ty.Bool, P("x", Anything, false)),
@@ -81,6 +84,10 @@ public static class BuiltinSignatures
         ("set", 0) => new Ty.SetTy(Ty.Never),
         ("set", 1) => new Ty.SetTy(TypeRelations.IterableItem(args[0]) ?? Ty.Any),
         ("sorted", 1) => new Ty.ListTy(TypeRelations.IterableItem(args[0]) ?? Ty.Any),
+        // The futures extension: a map over a function returns a list of its results; a future's result is unknown here.
+        ("parallel_map", 2) => new Ty.ListTy(args[0] is Ty.CallableTy { Result: { } r } ? r : Ty.Any),
+        ("all_of", 1) => new Ty.ListTy(Ty.Any),
+        ("spawn", >= 1) => new Ty.Name("future"),
         ("reversed", 1) => new Ty.ListTy(TypeRelations.IterableItem(args[0]) ?? Ty.Any),
         ("range", _) => Ty.Range,
         ("dict", 0) => new Ty.DictTy(Ty.Never, Ty.Never),

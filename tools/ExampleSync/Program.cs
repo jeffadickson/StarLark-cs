@@ -36,6 +36,8 @@ foreach (var path in Directory.GetFiles(dir, "*.star").OrderBy(p => p, StringCom
             "fstrings" => dialect with { EnableFStrings = true },
             "positional-only" => dialect with { EnablePositionalOnlyArguments = true },
             "keyword-only" => dialect with { EnableKeywordOnlyArguments = true },
+            "futures" => dialect with { EnableFutures = true },
+            "nondeterministic-futures" => dialect with { EnableFutures = true, EnableNondeterministicFutures = true },
             _ => dialect,
         };
     }
