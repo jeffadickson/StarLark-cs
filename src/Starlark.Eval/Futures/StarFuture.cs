@@ -110,7 +110,6 @@ internal sealed class StarFuture : IHostValue
     /// <summary>The value, or a fresh copy of the error the task raised (so threads never share one exception object).</summary>
     public object? Result()
     {
-        if (_run.LimitFailure is { } limit) throw Fresh(limit);
         if (_error is { } e) throw Fresh(e);
         return _result;
     }
@@ -189,6 +188,8 @@ internal sealed class StarFuture : IHostValue
         var owner = FutureBuiltins.Owner("get");
         FutureBuiltins.CheckSameRun(this, owner);
         Wait(owner);
+        // The wait ends early if the run failed elsewhere; this future may then not have finished, so report that failure.
+        if (!IsDone) throw Fresh(_run.LimitFailure ?? new OperationCanceledException());
         Join(owner);
         return Result();
     }

@@ -22,6 +22,7 @@ internal sealed class ExecutionContext
     {
         Interpreter = interpreter;
         MaxSteps = interpreter.MaxSteps;
+        ReportedMaxSteps = interpreter.MaxSteps;
         MaxBytes = interpreter.MaxAllocatedBytes;
         Elements = interpreter.StringElements;
         Token = interpreter.Cancellation;
@@ -35,6 +36,7 @@ internal sealed class ExecutionContext
     {
         Interpreter = parent.Interpreter;
         MaxSteps = maxSteps;
+        ReportedMaxSteps = parent.ReportedMaxSteps;
         MaxBytes = parent.MaxBytes;
         Elements = parent.Elements;
         Token = token;
@@ -76,7 +78,7 @@ internal sealed class ExecutionContext
     {
         if (MaxSteps <= 0) return;
         Steps += steps;
-        if (Steps > MaxSteps) throw new ExecutionLimitException("steps", $"Script exceeded the limit of {MaxSteps} steps");
+        if (Steps > MaxSteps) throw new ExecutionLimitException("steps", $"Script exceeded the limit of {ReportedMaxSteps} steps");
     }
 
     /// <summary>
@@ -99,6 +101,9 @@ internal sealed class ExecutionContext
 
     /// <summary>The step ceiling, or 0 for none.</summary>
     public long MaxSteps { get; }
+
+    /// <summary>The run-level step limit that error messages quote, the same for every task.</summary>
+    public long ReportedMaxSteps { get; }
 
     /// <summary>Steps taken so far.</summary>
     public long Steps;
@@ -131,7 +136,7 @@ internal sealed class ExecutionContext
     {
         if (MaxSteps > 0 && ++Steps > MaxSteps)
         {
-            throw new ExecutionLimitException("steps", $"Script exceeded the limit of {MaxSteps} steps");
+            throw new ExecutionLimitException("steps", $"Script exceeded the limit of {ReportedMaxSteps} steps");
         }
         if ((++_ticks & 1023) == 0)
         {
@@ -172,10 +177,15 @@ internal sealed class ExecutionContext
     /// case the running context is reused (a nested call shares the outer call's budgets). The result does nothing on
     /// disposal when nothing was installed.
     /// </summary>
-    public static Scope EnterOrReuse(Interpreter interpreter) =>
-        _current is { } outer && ReferenceEquals(outer.Interpreter, interpreter)
-            ? default
-            : Enter(new ExecutionContext(interpreter));
+    public static Scope EnterOrReuse(Interpreter interpreter)
+    {
+        if (_current is { } outer)
+        {
+            if (ReferenceEquals(outer.Interpreter, interpreter)) return default;
+            if (outer.IsTask) throw new StarlarkException("A task cannot call into another interpreter");
+        }
+        return Enter(new ExecutionContext(interpreter));
+    }
 
     /// <summary>
     /// Like <see cref="EnterOrReuse"/>, and for an outermost call also ends the run when it finishes: futures the

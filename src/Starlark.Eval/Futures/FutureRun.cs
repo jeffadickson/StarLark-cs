@@ -152,9 +152,9 @@ internal sealed class FutureRun : IDisposable
                 future.Complete(null, new OperationCanceledException(_token));
                 return;
             }
-            using var scope = ExecutionContext.Enter(context);
             try
             {
+                using var scope = ExecutionContext.Enter(context);
                 future.Complete(Isolation.FreezeResult(body()), null);
             }
             catch (Exception e)

@@ -70,7 +70,9 @@ internal static class Isolation
             case StarFuture:
                 throw new StarlarkException("A future cannot be passed to a task");
             case IHostValue h:
-                return h;       // host values are the host's responsibility (see FUT-HOST-008)
+                return h is IThreadSafeHostValue
+                    ? h
+                    : throw new StarlarkException($"A host value of type '{h.TypeName}' cannot be passed to a task: it is not marked IThreadSafeHostValue");
             default:
                 return value;
         }
@@ -98,18 +100,81 @@ internal static class Isolation
     public static HashSet<string> FreeNames(StarFunction fn)
     {
         var free = new HashSet<string>();
-        void Visit(Expr e)
+
+        void VisitExpr(Expr e, HashSet<string> bound)
         {
-            if (e is IdentExpr id && !fn.Locals.Contains(id.Name)) free.Add(id.Name);
-            e.VisitExpr(Visit);
+            switch (e)
+            {
+                case IdentExpr id:
+                    if (!fn.Locals.Contains(id.Name) && !bound.Contains(id.Name)) free.Add(id.Name);
+                    return;
+                case ListComprehension lc:
+                {
+                    var inner = new HashSet<string>(bound);
+                    Interpreter.CollectTargetNames(lc.First.Variable, inner);
+                    foreach (var c in lc.Rest)
+                    {
+                        if (c is ForClauseClause fc) Interpreter.CollectTargetNames(fc.For.Variable, inner);
+                    }
+                    VisitExpr(lc.First.Over, bound);   // the first iterable is evaluated outside the comprehension's own names
+                    lc.First.Variable.VisitExpr(x => VisitExpr(x, inner));
+                    foreach (var c in lc.Rest) c.VisitExpr(x => VisitExpr(x, inner));
+                    VisitExpr(lc.Item, inner);
+                    return;
+                }
+                case DictComprehension dc:
+                {
+                    var inner = new HashSet<string>(bound);
+                    Interpreter.CollectTargetNames(dc.First.Variable, inner);
+                    foreach (var c in dc.Rest)
+                    {
+                        if (c is ForClauseClause fc) Interpreter.CollectTargetNames(fc.For.Variable, inner);
+                    }
+                    VisitExpr(dc.First.Over, bound);
+                    dc.First.Variable.VisitExpr(x => VisitExpr(x, inner));
+                    foreach (var c in dc.Rest) c.VisitExpr(x => VisitExpr(x, inner));
+                    VisitExpr(dc.Key, inner);
+                    VisitExpr(dc.Value, inner);
+                    return;
+                }
+                case LambdaExpr lam:
+                {
+                    var inner = new HashSet<string>(bound);
+                    foreach (var p in lam.Parameters)
+                    {
+                        if (p.Name is not null) inner.Add(p.Name.Name);
+                    }
+                    foreach (var p in lam.Parameters) p.VisitExpr(x => VisitExpr(x, bound));   // defaults belong to the outer scope
+                    VisitExpr(lam.Body, inner);
+                    return;
+                }
+                default:
+                    e.VisitExpr(x => VisitExpr(x, bound));
+                    return;
+            }
         }
-        void VisitStmt(Stmt s)
+
+        void VisitStmt(Stmt s, HashSet<string> bound)
         {
-            s.VisitOwnExprs(Visit);
-            s.VisitStmt(VisitStmt);
+            if (s is DefStmt d)
+            {
+                s.VisitOwnExprs(x => VisitExpr(x, bound));   // parameter defaults and annotations
+                var inner = new HashSet<string>(bound);
+                foreach (var p in d.Parameters)
+                {
+                    if (p.Name is not null) inner.Add(p.Name.Name);
+                }
+                LocalCollector.Collect(d.Body, inner);
+                VisitStmt(d.Body, inner);
+                return;
+            }
+            s.VisitOwnExprs(x => VisitExpr(x, bound));
+            s.VisitStmt(c => VisitStmt(c, bound));
         }
-        if (fn.LambdaBody is not null) Visit(fn.LambdaBody);
-        if (fn.Body is not null) VisitStmt(fn.Body);
+
+        var none = new HashSet<string>();
+        if (fn.LambdaBody is not null) VisitExpr(fn.LambdaBody, none);
+        if (fn.Body is not null) VisitStmt(fn.Body, none);
         return free;
     }
 
@@ -136,6 +201,10 @@ internal static class Isolation
     public static StarFunction Snapshot(StarFunction fn, Dictionary<object, object?> seen)
     {
         if (seen.TryGetValue(fn, out var done)) return (StarFunction)done!;
+        if (CapturesLiveFrame(fn))
+        {
+            throw new StarlarkException($"A closure over variables of a function that is still running (`{fn.Name}`) cannot cross to a task: define it at module level or pass the values as arguments");
+        }
         var module = fn.ModuleFrame;
         var free = FreeNames(fn);
         var frame = new Frame(null, module.Locals, isModule: true);

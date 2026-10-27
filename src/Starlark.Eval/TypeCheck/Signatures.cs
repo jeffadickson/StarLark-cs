@@ -50,7 +50,7 @@ public static class BuiltinSignatures
     {
         ["abs"] = S(Num, P("x", Num)),
         ["parallel_map"] = S(new Ty.ListTy(Ty.Any), P("function", Ty.Callable), P("iterable", IterAny)),
-        ["all_of"] = S(new Ty.ListTy(Ty.Any), P("futures", IterAny)),
+        ["all_of"] = S(new Ty.ListTy(Ty.Any), P("futures", new Ty.IterableTy(new Ty.Name("future")))),
         ["spawn"] = S(new Ty.Name("future"), P("function", Ty.Callable), Rest(Anything), new SigParam("kwargs", ParamMode.Kwargs, Anything, false)),
         ["all"] = S(Ty.Bool, P("x", IterAny)),
         ["any"] = S(Ty.Bool, P("x", IterAny)),

@@ -75,3 +75,11 @@ public interface IHostValue
     /// <summary>Called when the module that holds this value is frozen. Make the value immutable here.</summary>
     void Freeze() { }
 }
+
+/// <summary>
+/// Marks a host value as safe to use from several threads at once. Only such values may be handed to a task or sit in
+/// the universe of an interpreter that runs tasks; the implementer promises immutability or its own synchronisation.
+/// </summary>
+public interface IThreadSafeHostValue : IHostValue
+{
+}

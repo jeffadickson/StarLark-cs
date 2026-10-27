@@ -146,6 +146,7 @@ public sealed class Interpreter
     public Action<string> Print { get; set; } = Console.WriteLine;
 
     private Dialect _dialect = Dialect.Standard;
+    private readonly Dictionary<string, object?> _futureNames = [];
 
     /// <summary>
     /// The language features to accept. Setting a dialect that enables futures also defines <c>parallel_map</c>,
@@ -157,7 +158,7 @@ public sealed class Interpreter
         set
         {
             _dialect = value;
-            if (value.EnableFutures) Futures.FutureBuiltins.Install(_universe, this);
+            Futures.FutureBuiltins.Sync(_universe, this, _futureNames);
         }
     }
 
@@ -268,9 +269,9 @@ public sealed class Interpreter
     /// by name in snake_case or as declared, with C# defaults honoured) and the result is converted back, so
     /// <c>it.Register("add", (int a, int b) =&gt; a + b)</c> needs no argument handling.
     /// </summary>
-    public void Register(string name, Delegate function)
+    public void Register(string name, Delegate function, bool threadSafe = false)
     {
-        _universe[name] = Interop.Wrap(name, function);
+        _universe[name] = Interop.Wrap(name, function, threadSafe);
         _hostFunctions[name] = HostTypes.SignatureOf(name, function.Method);
         _hostTypes.Remove(name);
     }
@@ -279,6 +280,7 @@ public sealed class Interpreter
     public void Expose(string name, object target)
     {
         _universe[name] = Interop.Expose(target);
+        _universeFrozen = false;
         _hostFunctions.Remove(name);
         _hostTypes[name] = HostTypes.ForExposed(target);
     }
@@ -287,9 +289,37 @@ public sealed class Interpreter
     public void DefineValue(string name, object? value)
     {
         _universe[name] = Interop.ToStar(value);
+        _universeFrozen = false;
         _hostFunctions.Remove(name);
         if (value is not null && value is not IHostValue) _hostTypes[name] = HostTypes.ForResult(value.GetType(), 0);
         else _hostTypes.Remove(name);
+    }
+
+    private bool _universeFrozen;
+    private readonly object _universeGate = new();
+
+    /// <summary>Taken around host calls made from tasks, unless the function was registered as thread-safe.</summary>
+    internal readonly object HostCallLock = new();
+
+    /// <summary>
+    /// Freezes everything host code has defined, so tasks only ever read immutable data. Host values must be marked
+    /// <see cref="IThreadSafeHostValue"/>. Called when the first task of a run starts.
+    /// </summary>
+    internal void FreezeUniverse()
+    {
+        lock (_universeGate)
+        {
+            if (_universeFrozen) return;
+            foreach (var (name, value) in _universe)
+            {
+                if (value is IHostValue h and not IThreadSafeHostValue)
+                {
+                    throw new StarlarkException($"Host value `{name}` is not thread-safe, so it cannot be used while tasks run: implement IThreadSafeHostValue");
+                }
+                Freezer.Freeze(value);
+            }
+            _universeFrozen = true;
+        }
     }
 
     private readonly Dictionary<string, TypeCheck.Signature> _hostFunctions = [];
@@ -306,7 +336,11 @@ public sealed class Interpreter
     }
 
     /// <summary>Predeclare a global visible in every module.</summary>
-    public void Define(string name, object? value) => _universe[name] = value;
+    public void Define(string name, object? value)
+    {
+        _universe[name] = value;
+        _universeFrozen = false;
+    }
 
     public void Define(string name, Func<Interpreter, IReadOnlyList<object?>, IReadOnlyList<KeyValuePair<string, object?>>, object?> fn) =>
         _universe[name] = new Builtin(name, fn);
@@ -379,6 +413,7 @@ public sealed class Interpreter
                 throw e;
             }
         }
+        if (ExecutionContext.Current is { IsTask: true }) throw new StarlarkException("`Execute` cannot run inside a task");
         var names = Resolver.Resolve(ast, _universe.ContainsKey, AllowGlobalReassign);
         var frame = new Frame(null, names, isModule: true);
         // Budgets cover the outermost call, including every module it loads: a nested Execute reuses the context.
@@ -397,8 +432,10 @@ public sealed class Interpreter
         var names = Resolver.Resolve(ast, _universe.ContainsKey, allowGlobalReassign: true);
         var frame = new Frame(null, names, isModule: true);
         var assign = (AssignStmt)ast.Statement;
-        using var scope = ExecutionContext.EnterOrReuse(this);
-        return EvalExpr(assign.Value, frame, ast.CodeMap);
+        using var scope = ExecutionContext.EnterRun(this);
+        var value = EvalExpr(assign.Value, frame, ast.CodeMap);
+        if (scope.IsOutermost) Futures.FutureBuiltins.CheckAllCollected(Ctx);
+        return value;
     }
 
     // ------------------------------------------------------------------ statements
@@ -727,6 +764,7 @@ public sealed class Interpreter
 
         var frame = new Frame(fn.Closure, fn.Locals, isModule: false);
         ctx.Depth++;
+        int spawnedBefore = ctx.Spawned.Count;
         try
         {
             BindArguments(fn, args, kwargs, frame);
@@ -745,6 +783,7 @@ public sealed class Interpreter
             {
                 Annotations.Check(rt, result, "return type");
             }
+            if (!ctx.IsTask) Futures.FutureBuiltins.CheckCallCollected(ctx, spawnedBefore);
             return result;
         }
         finally

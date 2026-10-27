@@ -1009,12 +1009,13 @@ public sealed class TypeChecker
         }
 
         var argTys = pos.Select(p => p.Ty).ToList();
-        if (BuiltinSignatures.Functions.TryGetValue(fn.Name, out var builtin))
+        bool dormant = IsFuturesName(fn.Name) && !_isPredeclared(fn.Name);   // the dialect has not defined it: not ours to check
+        if (!dormant && BuiltinSignatures.Functions.TryGetValue(fn.Name, out var builtin))
         {
             CheckArguments(builtin, pos, named, hasStar, call);
             return BuiltinSignatures.Result(fn.Name, argTys) ?? builtin.Result;
         }
-        return BuiltinSignatures.Result(fn.Name, argTys) ?? Ty.Any;
+        return (dormant ? null : BuiltinSignatures.Result(fn.Name, argTys)) ?? Ty.Any;
     }
 
     /// <summary>
@@ -1102,6 +1103,8 @@ public sealed class TypeChecker
                 return Ty.Never;
         }
     }
+
+    private static bool IsFuturesName(string n) => n is "parallel_map" or "spawn" or "all_of" or "first_of";
 
     private static bool IsBuiltinName(string n) => n is "list" or "tuple" or "set" or "dict" or "sorted" or "reversed" or "range"
         or "enumerate" or "zip" or "min" or "max";

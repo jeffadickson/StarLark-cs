@@ -300,6 +300,15 @@ public static class Freezer
             case StarRecord rec:
                 rec.Freeze();
                 break;
+            case BoundMethod bm:
+                Freeze(bm.Receiver);
+                break;
+            case StarRecordType rt:
+                foreach (var field in rt.Fields)
+                {
+                    if (field.HasDefault) Freeze(field.Default);
+                }
+                break;
         }
     }
 }

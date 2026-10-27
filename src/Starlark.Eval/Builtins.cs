@@ -203,6 +203,8 @@ public static class Builtins
                 throw new StarlarkException(
                     $"Default value `{Repr.Of(dflt)}` of type `{Types.Name(dflt)}` does not match the field type `{ty}`");
             }
+            // A default is shared by every record built from the type, so it must not be changeable.
+            if (has) Freezer.Freeze(dflt);
             return new FieldSpec(ty, dflt, has);
         });
 

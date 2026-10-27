@@ -103,15 +103,15 @@ public static class Interop
             .Where(p => p.CanRead && p.GetIndexParameters().Length == 0);
 
     /// <summary>Wraps a delegate as a named callable Starlark function, converting arguments and result.</summary>
-    public static Builtin Wrap(string name, Delegate d) =>
-        new(name, (interp, args, kwargs) => Invoke(interp, d.Target, d.Method, args, kwargs, true));
+    public static Builtin Wrap(string name, Delegate d, bool threadSafe = false) =>
+        new(name, (interp, args, kwargs) => Invoke(interp, d.Target, d.Method, args, kwargs, true, serialize: !threadSafe));
 
     /// <summary>Wraps a delegate as a callable Starlark function, converting arguments and result.</summary>
     private static Builtin FromDelegate(Delegate d, bool snake) =>
         new(d.Method.Name, (interp, args, kwargs) => Invoke(interp, d.Target, d.Method, args, kwargs, snake));
 
     private static object? Invoke(Interpreter interp, object? target, MethodBase method, IReadOnlyList<object?> args,
-        IReadOnlyList<KeyValuePair<string, object?>> kwargs, bool snake)
+        IReadOnlyList<KeyValuePair<string, object?>> kwargs, bool snake, bool serialize = true)
     {
         var parameters = method.GetParameters();
         var bound = new object?[parameters.Length];
@@ -165,7 +165,25 @@ public static class Interop
         }
         try
         {
-            var result = method.Invoke(target, bound);
+            object? result;
+            var running = ExecutionContext.Current;
+            if (serialize && running is { IsTask: true })
+            {
+                // Host code is not assumed to be thread-safe: calls from tasks take turns, and the wait still honours the deadline.
+                while (!Monitor.TryEnter(interp.HostCallLock, 25)) running.PollNow();
+                try
+                {
+                    result = method.Invoke(target, bound);
+                }
+                finally
+                {
+                    Monitor.Exit(interp.HostCallLock);
+                }
+            }
+            else
+            {
+                result = method.Invoke(target, bound);
+            }
             if (result is ValueTask vt) result = vt.AsTask();
             else if (result is not null && result.GetType() is { IsGenericType: true } rt
                      && rt.GetGenericTypeDefinition() == typeof(ValueTask<>))

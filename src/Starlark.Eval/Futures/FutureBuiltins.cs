@@ -9,15 +9,27 @@ namespace Starlark.Eval.Futures;
 internal static class FutureBuiltins
 {
     /// <summary>Installs the functions on an interpreter whose dialect enables futures.</summary>
-    public static void Install(Dictionary<string, object?> universe, Interpreter interpreter)
+    public static void Sync(Dictionary<string, object?> universe, Interpreter interpreter, Dictionary<string, object?> installed)
     {
-        universe["parallel_map"] = new Builtin("parallel_map", ParallelMap);
-        universe["spawn"] = new Builtin("spawn", Spawn);
-        universe["all_of"] = new Builtin("all_of", AllOf);
-        if (interpreter.Dialect.EnableNondeterministicFutures)
+        // Remove what an earlier dialect added (but never a host function that replaced it), then add what this one needs.
+        foreach (var (name, builtin) in installed.ToList())
         {
-            universe["first_of"] = new Builtin("first_of", FirstOf);
+            if (universe.TryGetValue(name, out var current) && ReferenceEquals(current, builtin)) universe.Remove(name);
+            installed.Remove(name);
         }
+        var dialect = interpreter.Dialect;
+        if (!dialect.EnableFutures) return;
+
+        void Add(string name, Builtin builtin)
+        {
+            if (universe.ContainsKey(name)) return;   // a host function of the same name wins
+            universe[name] = builtin;
+            installed[name] = builtin;
+        }
+        Add("parallel_map", new Builtin("parallel_map", ParallelMap));
+        Add("spawn", new Builtin("spawn", Spawn));
+        Add("all_of", new Builtin("all_of", AllOf));
+        if (dialect.EnableNondeterministicFutures) Add("first_of", new Builtin("first_of", FirstOf));
     }
 
     /// <summary>The context of the script thread calling a futures function, which must not itself be a task.</summary>
@@ -173,6 +185,7 @@ internal static class FutureBuiltins
     private static StarFuture Start(ExecutionContext owner, object fn, IReadOnlyList<object?> args,
         IReadOnlyList<KeyValuePair<string, object?>> kwargs, int taskCount)
     {
+        owner.Interpreter.FreezeUniverse();
         var run = RunOf(owner);
         // Copy the arguments on the spawning thread, before the task can run, so the caller keeps its values.
         var seen = new Dictionary<object, object?>(ReferenceEqualityComparer.Instance);
@@ -181,7 +194,7 @@ internal static class FutureBuiltins
 
         var interp = owner.Interpreter;
         // A module-level function runs against a private frozen snapshot of the globals it reads.
-        object callee = fn is StarFunction sf ? Isolation.Snapshot(sf, seen) : fn;
+        object callee = fn is StarFunction sf ? Isolation.Snapshot(sf, new Dictionary<object, object?>(ReferenceEqualityComparer.Instance)) : fn;
         var future = run.Start(() => interp.CallValue(callee, copiedArgs, copiedKwargs), owner, taskCount);
         future.Serial = owner.Spawned.Count;
         owner.Spawned.Add(future);
@@ -195,6 +208,8 @@ internal static class FutureBuiltins
     private static List<object?> CollectAll(ExecutionContext owner, IReadOnlyList<StarFuture> futures, out Exception? firstError)
     {
         foreach (var f in futures) f.Wait(owner);
+        // If the run failed on a limit, report that and print nothing from tasks: how far each got depends on scheduling.
+        if (futures.Count > 0 && futures[0].Run.LimitFailure is { } failure) throw StarFuture.Fresh(failure);
         var results = new List<object?>(futures.Count);
         firstError = null;
         foreach (var f in futures)
@@ -215,15 +230,21 @@ internal static class FutureBuiltins
         return new StarList(results);
     }
 
+    /// <summary>Called when a function returns: futures it started and did not collect must not escape it.</summary>
+    public static void CheckCallCollected(ExecutionContext owner, int startedBefore)
+    {
+        if (owner.Spawned.Count <= startedBefore) return;
+        int n = owner.Spawned.Count - startedBefore;
+        foreach (var f in owner.Spawned.Skip(startedBefore).ToList()) f.Abandon(owner);
+        throw new StarlarkException($"{n} future(s) started in this function were not collected before it returned: call get() or all_of() first");
+    }
+
     /// <summary>Called when a call or module ends: any future it started but did not collect is an error.</summary>
     public static void CheckAllCollected(ExecutionContext owner)
     {
         if (owner.Spawned.Count == 0) return;
         int n = owner.Spawned.Count;
-        var limit = owner.Run?.LimitFailure;
         foreach (var f in owner.Spawned.ToList()) f.Abandon(owner);
-        // A limit hit by a task nobody collected is still a resource failure, not a mistake in the script.
-        if (limit is not null) throw StarFuture.Fresh(limit);
         throw new StarlarkException($"{n} future(s) were started but never collected: call get() or all_of() before the call ends");
     }
 }
