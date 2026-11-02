@@ -90,12 +90,13 @@ VERIFICATION: HostValueTests
 
 [REQUIREMENT]
 UID: HOST-REG-006
-STATUS: Open
+STATUS: Implemented
 TITLE: Opt-in exposure by attribute
 STATEMENT: >>>
 The host shall be able to mark which properties and methods of a class are visible to scripts, and members not marked
 shall be invisible.
 <<<
+VERIFICATION: ExposeAttributeTests
 
 [/SECTION]
 
@@ -167,12 +168,13 @@ VERIFICATION: InteropTests.ScriptsCannotChangeTheHostObject
 
 [REQUIREMENT]
 UID: HOST-MAP-007
-STATUS: Open
+STATUS: Implemented
 TITLE: JSON shortcuts
 STATEMENT: >>>
 The host shall be able to pass a value to and from a script as JSON with one call each way, using the same field naming
 as the struct mapping.
 <<<
+VERIFICATION: HostJsonTests
 
 [/SECTION]
 
@@ -229,11 +231,12 @@ VERIFICATION: AsyncHostTests
 
 [REQUIREMENT]
 UID: HOST-RUN-006
-STATUS: Open
+STATUS: Implemented
 TITLE: Shareable frozen modules
 STATEMENT: >>>
 A module that has been loaded and frozen shall be callable from many threads at once without data races.
 <<<
+VERIFICATION: FrozenModuleConcurrencyTests; FuturesAbuseTests.ConcurrentRunsOnOneInterpreter
 
 [/SECTION]
 
@@ -273,12 +276,13 @@ VERIFICATION: InteropTests.HostExceptionsBecomeScriptErrorsAndLimitsPassThrough
 
 [REQUIREMENT]
 UID: HOST-ERR-004
-STATUS: Open
+STATUS: Implemented
 TITLE: Script call stack
 STATEMENT: >>>
 A runtime error shall include the chain of script function calls (file, line, function) that led to it, available to the
 host as structured data.
 <<<
+VERIFICATION: CallStackTests
 
 [/SECTION]
 
@@ -357,12 +361,13 @@ VERIFICATION: TypeCheckerTests
 
 [REQUIREMENT]
 UID: HOST-CHK-002
-STATUS: Open
+STATUS: Implemented
 TITLE: Checker knows host registrations
 STATEMENT: >>>
 The static checker shall use the .NET signatures of registered functions, exposed objects and predeclared values, so a
 call with a wrong argument type is reported before the run.
 <<<
+VERIFICATION: HostTypingTests
 COMMENT: The checker now follows load() into host-supplied modules (TypecheckLoadTests), but registered functions are still typed typing.Any.
 
 [/SECTION]
