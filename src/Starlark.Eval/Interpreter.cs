@@ -269,10 +269,25 @@ public sealed class Interpreter
     /// by name in snake_case or as declared, with C# defaults honoured) and the result is converted back, so
     /// <c>it.Register("add", (int a, int b) =&gt; a + b)</c> needs no argument handling.
     /// </summary>
-    public void Register(string name, Delegate function, bool threadSafe = false)
+    /// <param name="name">The name scripts call.</param>
+    /// <param name="function">The function.</param>
+    /// <param name="threadSafe">True if the function may be called from several tasks at once; otherwise calls from tasks take turns.</param>
+    /// <param name="asFuture">
+    /// With futures enabled, a function that returns a task starts it and returns a future the script collects later with
+    /// <c>get()</c> or <c>all_of()</c>, so several host operations can overlap. The number in flight is capped by
+    /// <see cref="Futures.FutureLimits.MaxHostOperations"/>. Called from inside a task, it simply waits for its result.
+    /// Without this option a task-returning function always waits.
+    /// </param>
+    public void Register(string name, Delegate function, bool threadSafe = false, bool asFuture = false)
     {
-        _universe[name] = Interop.Wrap(name, function, threadSafe);
-        _hostFunctions[name] = HostTypes.SignatureOf(name, function.Method);
+        _universe[name] = Interop.Wrap(name, function, threadSafe, asFuture);
+        var signature = HostTypes.SignatureOf(name, function.Method);
+        // With futures enabled, a task-returning function registered asFuture hands the script a future, not the value.
+        bool returnsTask = function.Method.ReturnType == typeof(Task) || function.Method.ReturnType == typeof(ValueTask)
+            || (function.Method.ReturnType.IsGenericType &&
+                (function.Method.ReturnType.GetGenericTypeDefinition() == typeof(Task<>) || function.Method.ReturnType.GetGenericTypeDefinition() == typeof(ValueTask<>)));
+        if (asFuture && returnsTask && Dialect.EnableFutures) signature = signature with { Result = new Ty.Name("future") };
+        _hostFunctions[name] = signature;
         _hostTypes.Remove(name);
     }
 

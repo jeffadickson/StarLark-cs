@@ -19,6 +19,15 @@ public sealed record FutureLimits
     /// <summary>Steps charged to the spawner for each task started.</summary>
     public int SpawnStepCost { get; init; } = 1_000;
 
+    /// <summary>
+    /// Host operations a script may have in flight at once, started with a function registered <c>asFuture</c>. Starting
+    /// one more fails with <see cref="ExecutionLimitException"/> (limit "host-operations").
+    /// </summary>
+    public int MaxHostOperations { get; init; } = 8;
+
+    /// <summary>Steps charged for each call to a host function that returns a task.</summary>
+    public int HostCallStepCost { get; init; } = 100;
+
     /// <summary>The most worker threads one run may ever create, whatever <see cref="MaxConcurrency"/> says.</summary>
     public const int MaxWorkersCeiling = 64;
 
@@ -27,7 +36,8 @@ public sealed record FutureLimits
 }
 
 /// <summary>What happened in a run, for the host.</summary>
-public sealed record RunStats(long Spawns, int PeakLiveFutures, int PeakConcurrency, int LeakedTasks);
+public sealed record RunStats(long Spawns, int PeakLiveFutures, int PeakConcurrency, int LeakedTasks,
+    long HostCalls = 0, int PeakHostOperations = 0, long Steps = 0);
 
 /// <summary>
 /// The tasks of one top-level run: owns the scheduler, the live-future registry, the counters and the shutdown
@@ -49,6 +59,9 @@ internal sealed class FutureRun : IDisposable
     private int _running;
     private int _peakRunning;
     private int _leaked;
+    private int _hostInFlight;
+    private int _peakHostInFlight;
+    private long _hostCalls;
 
     public FutureRun(Interpreter interpreter, FutureLimits limits, CancellationToken parent)
     {
@@ -61,11 +74,14 @@ internal sealed class FutureRun : IDisposable
         _maxWorkers = Math.Clamp(limits.MaxConcurrency, 1, FutureLimits.MaxWorkersCeiling);
     }
 
-    private void EnsureWorker(int queued)
+    private void EnsureWorker()
     {
         lock (_gate)
         {
-            if (_workers.Count >= _maxWorkers || _workers.Count >= queued + _running) return;
+            // Idle workers are those not currently running a task. Queued work with no idle worker to take it needs a
+            // new thread (up to the cap); otherwise a task behind a long-running one would never start.
+            int idle = _workers.Count - Volatile.Read(ref _running);
+            if (_workers.Count >= _maxWorkers || _queue.Count <= idle) return;
             var thread = new Thread(WorkerLoop, 16 * 1024 * 1024) { IsBackground = true, Name = "starlark-task-" + _workers.Count };
             _workers.Add(thread);
             thread.Start();
@@ -80,7 +96,7 @@ internal sealed class FutureRun : IDisposable
     {
         get
         {
-            lock (_gate) return new RunStats(_spawns, _peakLive, _peakRunning, _leaked);
+            lock (_gate) return new RunStats(_spawns, _peakLive, _peakRunning, _leaked, _hostCalls, _peakHostInFlight);
         }
     }
 
@@ -137,7 +153,7 @@ internal sealed class FutureRun : IDisposable
         future.Context = context;
         future.Slice = slice;
         _queue.Add(() => RunTask(future, context, body));
-        EnsureWorker(_queue.Count);
+        EnsureWorker();
         return future;
     }
 
@@ -193,6 +209,85 @@ internal sealed class FutureRun : IDisposable
         {
             lock (_gate) return _limitFailure;
         }
+    }
+
+    /// <summary>Counts a call to a host function that returned a task.</summary>
+    public void NoteHostCall()
+    {
+        lock (_gate) _hostCalls++;
+    }
+
+    /// <summary>Reserves one of the in-flight host operation slots, or fails with a limit error.</summary>
+    public void ReserveHostOperation()
+    {
+        lock (_gate)
+        {
+            if (_closing) throw new StarlarkException("The run is ending: no more host operations can be started");
+            int cap = Math.Max(1, Limits.MaxHostOperations);
+            if (_hostInFlight >= cap)
+            {
+                throw new ExecutionLimitException("host-operations", $"Script has more than {cap} host operations in flight");
+            }
+            if (_live.Count >= Limits.MaxLiveFutures)
+            {
+                throw new ExecutionLimitException("futures", $"Script has more than {Limits.MaxLiveFutures} uncollected futures");
+            }
+            _hostInFlight++;
+            _peakHostInFlight = Math.Max(_peakHostInFlight, _hostInFlight);
+        }
+    }
+
+    /// <summary>Gives back a slot reserved with <see cref="ReserveHostOperation"/>.</summary>
+    public void ReleaseHostOperation()
+    {
+        lock (_gate) _hostInFlight--;
+    }
+
+    /// <summary>
+    /// Wraps a host task in a future the script can collect. The slot reserved for it is released when the task ends.
+    /// The result is converted and frozen on the completing thread, so it can safely cross to the script.
+    /// </summary>
+    public StarFuture StartHostFuture(Task task, Func<object?> convert, ExecutionContext owner, string function)
+    {
+        StarFuture future;
+        lock (_gate)
+        {
+            future = new StarFuture(this);
+            _live.Add(future);
+            _peakLive = Math.Max(_peakLive, _live.Count);
+        }
+        future.Serial = owner.Spawned.Count;
+        owner.Spawned.Add(future);
+        task.ContinueWith(t =>
+        {
+            try
+            {
+                if (t.IsCanceled)
+                {
+                    future.Complete(null, new OperationCanceledException(_token));
+                }
+                else if (t.IsFaulted)
+                {
+                    var inner = t.Exception!.GetBaseException();
+                    future.Complete(null, inner is StarlarkException or ExecutionLimitException or OperationCanceledException
+                        ? inner
+                        : new StarlarkException($"Host function `{function}` failed: {inner.Message}"));
+                }
+                else
+                {
+                    future.Complete(Isolation.FreezeResult(convert()), null);
+                }
+            }
+            catch (Exception e)
+            {
+                future.Complete(null, e is StarlarkException ? e : new StarlarkException($"Host function `{function}` failed: {e.Message}"));
+            }
+            finally
+            {
+                ReleaseHostOperation();
+            }
+        }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
+        return future;
     }
 
     /// <summary>Marks a future as collected, so it no longer counts against the live-future cap.</summary>

@@ -1,0 +1,5 @@
+{
+  "diagnosticMessages": true,
+  "internalDiagnosticMessages": true,
+  "parallelizeTestCollections": false
+}

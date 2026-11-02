@@ -51,6 +51,9 @@ internal static class FutureBuiltins
         }
     }
 
+    /// <summary>The run that owns the tasks and host operations of <paramref name="owner"/>, created on first use.</summary>
+    internal static FutureRun RunFor(ExecutionContext owner) => RunOf(owner);
+
     private static FutureRun RunOf(ExecutionContext owner)
     {
         if (owner.Run is { } existing) return existing;

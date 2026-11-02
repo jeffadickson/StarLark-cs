@@ -103,19 +103,28 @@ public static class Interop
             .Where(p => p.CanRead && p.GetIndexParameters().Length == 0);
 
     /// <summary>Wraps a delegate as a named callable Starlark function, converting arguments and result.</summary>
-    public static Builtin Wrap(string name, Delegate d, bool threadSafe = false) =>
-        new(name, (interp, args, kwargs) => Invoke(interp, d.Target, d.Method, args, kwargs, true, serialize: !threadSafe));
+    public static Builtin Wrap(string name, Delegate d, bool threadSafe = false, bool asFuture = false) =>
+        new(name, (interp, args, kwargs) => Invoke(interp, d.Target, d.Method, args, kwargs, true, serialize: !threadSafe, asFuture: asFuture, displayName: name));
 
     /// <summary>Wraps a delegate as a callable Starlark function, converting arguments and result.</summary>
     private static Builtin FromDelegate(Delegate d, bool snake) =>
         new(d.Method.Name, (interp, args, kwargs) => Invoke(interp, d.Target, d.Method, args, kwargs, snake));
 
     private static object? Invoke(Interpreter interp, object? target, MethodBase method, IReadOnlyList<object?> args,
-        IReadOnlyList<KeyValuePair<string, object?>> kwargs, bool snake, bool serialize = true)
+        IReadOnlyList<KeyValuePair<string, object?>> kwargs, bool snake, bool serialize = true, bool asFuture = false, string? displayName = null)
     {
         var parameters = method.GetParameters();
         var bound = new object?[parameters.Length];
         var set = new bool[parameters.Length];
+        // Errors name the function the script called, not the compiler's name for a lambda.
+        string shownName = displayName ?? method.Name;
+
+        // A host operation started from the script's own thread may return a future; it then gets the run's token, so
+        // ending the run cancels it. Inside a task the call simply waits.
+        var running = ExecutionContext.Current;
+        var hostRun = asFuture && interp.Dialect.EnableFutures && running is { IsTask: false }
+            ? Futures.FutureBuiltins.RunFor(running)
+            : null;
 
         // An Interpreter or CancellationToken parameter is supplied by the host, not by the script.
         var visible = new List<int>();
@@ -128,7 +137,7 @@ public static class Interop
             }
             else if (parameters[i].ParameterType == typeof(CancellationToken))
             {
-                bound[i] = ExecutionContext.Current?.Token ?? interp.Cancellation;
+                bound[i] = hostRun?.Token ?? running?.Token ?? interp.Cancellation;
                 set[i] = true;
             }
             else
@@ -138,7 +147,7 @@ public static class Interop
         }
         if (args.Count > visible.Count)
         {
-            throw new StarlarkException($"Too many positional arguments to `{method.Name}`: got {args.Count}, want at most {visible.Count}");
+            throw new StarlarkException($"Too many positional arguments to `{shownName}`: got {args.Count}, want at most {visible.Count}");
         }
         for (int j = 0; j < args.Count; j++)
         {
@@ -149,8 +158,8 @@ public static class Interop
         foreach (var (name, value) in kwargs)
         {
             int index = visible.FirstOrDefault(i => parameters[i].Name == name || (parameters[i].Name is not null && SnakeCase(parameters[i].Name!) == name), -1);
-            if (index < 0) throw new StarlarkException($"Unexpected parameter named `{name}` for call to `{method.Name}`");
-            if (set[index]) throw new StarlarkException($"Parameter `{name}` was given twice in call to `{method.Name}`");
+            if (index < 0) throw new StarlarkException($"Unexpected parameter named `{name}` for call to `{shownName}`");
+            if (set[index]) throw new StarlarkException($"Parameter `{name}` was given twice in call to `{shownName}`");
             bound[index] = FromStar(value, parameters[index].ParameterType);
             set[index] = true;
         }
@@ -159,14 +168,19 @@ public static class Interop
             if (set[i]) continue;
             if (!parameters[i].HasDefaultValue)
             {
-                throw new StarlarkException($"Missing parameter `{parameters[i].Name}` for call to `{method.Name}`");
+                throw new StarlarkException($"Missing parameter `{parameters[i].Name}` for call to `{shownName}`");
             }
             bound[i] = parameters[i].DefaultValue is DBNull ? null : parameters[i].DefaultValue;
         }
+        bool reserved = false, handedOff = false;
         try
         {
             object? result;
-            var running = ExecutionContext.Current;
+            if (hostRun is not null)
+            {
+                hostRun.ReserveHostOperation();
+                reserved = true;
+            }
             if (serialize && running is { IsTask: true })
             {
                 // Host code is not assumed to be thread-safe: calls from tasks take turns, and the wait still honours the deadline.
@@ -192,9 +206,18 @@ public static class Interop
             }
             if (result is Task task)
             {
+                if (interp.Dialect.EnableFutures)
+                {
+                    running?.Charge(Math.Max(0, interp.FutureLimits.HostCallStepCost));
+                    running?.Run?.NoteHostCall();
+                }
+                if (hostRun is not null)
+                {
+                    handedOff = true;   // the future now owns the reserved slot
+                    return hostRun.StartHostFuture(task, () => ToStar(TaskResult(task), snake), running!, shownName);
+                }
                 interp.AwaitHostTask(task);
-                result = task.GetType().IsGenericType && task.GetType().GetProperty("Result") is { } p
-                    && p.PropertyType.Name != "VoidTaskResult" ? p.GetValue(task) : null;
+                result = TaskResult(task);
             }
             return ToStar(result, snake);
         }
@@ -204,9 +227,19 @@ public static class Interop
             {
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e.InnerException).Throw();
             }
-            throw new StarlarkException($"Host function `{method.Name}` failed: {e.InnerException.Message}");
+            throw new StarlarkException($"Host function `{shownName}` failed: {e.InnerException.Message}");
+        }
+        finally
+        {
+            if (reserved && !handedOff) hostRun!.ReleaseHostOperation();
         }
     }
+
+    /// <summary>The value a completed task produced, or null for a task without a result.</summary>
+    private static object? TaskResult(Task task) =>
+        task.GetType().IsGenericType && task.GetType().GetProperty("Result") is { } p && p.PropertyType.Name != "VoidTaskResult"
+            ? p.GetValue(task)
+            : null;
 
     /// <summary>
     /// Exposes a host object to scripts as a struct: public properties become fields (a snapshot taken now) and public
