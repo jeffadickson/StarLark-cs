@@ -39,29 +39,60 @@ public static partial class StringFormat
         return i == start ? null : (int)value;
     }
 
-    /// <summary>Pads <paramref name="body"/> to <paramref name="width"/>, putting any sign or prefix before zero padding.</summary>
-    private static string Pad(string sign, string body, int? width, bool left, bool zero, char fill = ' ', char align = '\0')
+    /// <summary>
+    /// How many characters a piece of text has for width and precision: Unicode code points, as in Python, in both string
+    /// element modes. A surrogate pair counts once and is never cut in half; <c>len()</c> is unaffected and still counts
+    /// the mode's own elements.
+    /// </summary>
+    internal static int CharCount(string s)
     {
-        int len = sign.Length + body.Length;
+        int n = 0;
+        for (int i = 0; i < s.Length; i++)
+        {
+            if (!(char.IsLowSurrogate(s[i]) && i > 0 && char.IsHighSurrogate(s[i - 1]))) n++;
+        }
+        return n;
+    }
+
+    /// <summary>The first <paramref name="count"/> characters of <paramref name="s"/>, without splitting a surrogate pair.</summary>
+    internal static string TakeChars(string s, int count)
+    {
+        int seen = 0, i = 0;
+        while (i < s.Length && seen < count)
+        {
+            i += char.IsHighSurrogate(s[i]) && i + 1 < s.Length && char.IsLowSurrogate(s[i + 1]) ? 2 : 1;
+            seen++;
+        }
+        return s[..i];
+    }
+
+    /// <summary>Pads <paramref name="body"/> to <paramref name="width"/>, putting any sign or prefix before zero padding.</summary>
+    private static string Pad(string sign, string body, int? width, bool left, bool zero, string fill = " ", char align = '\0')
+    {
+        int len = CharCount(sign) + CharCount(body);
         if (width is not { } w || len >= w) return sign + body;
         int gap = w - len;
         if (align == '=')
         {
             // Padding goes between the sign (or prefix) and the digits, using the fill character.
-            return sign + new string(zero ? '0' : fill, gap) + body;
+            return sign + Repeat(zero ? "0" : fill, gap) + body;
         }
         if (zero && align == '\0')
         {
-            return sign + new string('0', gap) + body;
+            return sign + Repeat("0", gap) + body;
         }
         char how = align != '\0' ? align : left ? '<' : '>';
         return how switch
         {
-            '<' => sign + body + new string(fill, gap),
-            '^' => new string(fill, gap / 2) + sign + body + new string(fill, gap - gap / 2),
-            _ => new string(fill, gap) + sign + body,
+            '<' => sign + body + Repeat(fill, gap),
+            '^' => Repeat(fill, gap / 2) + sign + body + Repeat(fill, gap - gap / 2),
+            _ => Repeat(fill, gap) + sign + body,
         };
     }
+
+    /// <summary>Repeats a fill (one code point, possibly a surrogate pair) <paramref name="count"/> times.</summary>
+    private static string Repeat(string fill, int count) =>
+        count <= 0 ? "" : fill.Length == 1 ? new string(fill[0], count) : string.Concat(Enumerable.Repeat(fill, count));
 
     private static string GroupDigits(string digits, char sep, int size)
     {
@@ -154,7 +185,7 @@ public static partial class StringFormat
 
     private static string PadText(string text, PercentSpec spec)
     {
-        if (spec.Prec is { } p && p < text.Length) text = text[..p];
+        if (spec.Prec is { } p && p < CharCount(text)) text = TakeChars(text, p);
         return Pad("", text, spec.Width, spec.Left, zero: false);
     }
 
@@ -172,7 +203,7 @@ public static partial class StringFormat
     /// <paramref name="number"/> is a <see cref="BigInteger"/> or a <see cref="double"/>.
     /// </summary>
     internal static string Compose(object number, char type, bool plus, bool space, bool alt, bool zero, int? width,
-        int? prec, bool left, char fill = ' ', char align = '\0', char grouping = '\0')
+        int? prec, bool left, string fill = " ", char align = '\0', char grouping = '\0')
     {
         string sign;
         string body;
@@ -271,12 +302,15 @@ public static partial class StringFormat
     {
         if (spec.Length == 0) return Repr.Str(value);
         int i = 0;
-        char fill = ' ', align = '\0';
-        if (spec.Length >= 2 && spec[1] is '<' or '>' or '^' or '=' && spec.Length >= 2)
+        string fill = " ";
+        char align = '\0';
+        // The fill is one code point (a surrogate pair counts as one), and is only a fill if an alignment follows it.
+        int fillLength = spec.Length > 1 && char.IsHighSurrogate(spec[0]) && char.IsLowSurrogate(spec[1]) ? 2 : 1;
+        if (spec.Length > fillLength && spec[fillLength] is '<' or '>' or '^' or '=')
         {
-            fill = spec[0];
-            align = spec[1];
-            i = 2;
+            fill = spec[..fillLength];
+            align = spec[fillLength];
+            i = fillLength + 1;
         }
         else if (spec.Length >= 1 && spec[0] is '<' or '>' or '^' or '=')
         {
@@ -328,7 +362,7 @@ public static partial class StringFormat
             {
                 if (type is not ('\0' or 's')) throw new StarlarkException($"Unknown format code '{type}' for a string");
                 string text = Repr.Str(value);
-                if (prec is { } p && p < text.Length) text = text[..p];
+                if (prec is { } p && p < CharCount(text)) text = TakeChars(text, p);
                 return Pad("", text, width, left: false, zero: false, fill, align == '\0' ? '<' : align);
             }
             case BigInteger n:
