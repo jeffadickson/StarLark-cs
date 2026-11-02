@@ -715,8 +715,9 @@ public sealed class Interpreter
     {
         for (var fr = f; fr is not null; fr = fr.Parent)
         {
-            if (!fr.Locals.Contains(name)) continue;
+            // A name that is bound is always one of the frame's locals, so try the value first: one probe in the common case.
             if (fr.Vars.TryGetValue(name, out var v)) return v;
+            if (!fr.Locals.Contains(name)) continue;
             throw new StarlarkException(
                 $"{(fr.IsModule ? "Global" : "Local")} variable `{name}` referenced before assignment");
         }
@@ -850,6 +851,30 @@ public sealed class Interpreter
     {
         var ps = fn.Params.Params;
         var idx = fn.Params.Indices;
+
+        // Fast path: only positional arguments, no *args or **kwargs. Bind straight into the frame, with no scratch arrays.
+        if (kwargs.Count == 0 && idx.Args is null && idx.Kwargs is null && args.Count <= idx.NumPositional)
+        {
+            for (int i = 0; i < ps.Count; i++)
+            {
+                object? value;
+                if (i < args.Count)
+                {
+                    value = args[i];
+                }
+                else if (fn.Defaults[i] is Missing)
+                {
+                    throw new StarlarkException($"Missing parameter `{ps[i].Ident.Name}` for call to `{fn.Name}`");
+                }
+                else
+                {
+                    value = fn.Defaults[i];
+                }
+                frame.Vars[ps[i].Ident.Name] = value;
+            }
+            return;
+        }
+
         var bound = new object?[ps.Count];
         var isSet = new bool[ps.Count];
 
@@ -870,10 +895,10 @@ public sealed class Interpreter
         }
 
         StarDict? extra = idx.Kwargs is null ? null : new StarDict();
-        var seen = new HashSet<string>();
+        HashSet<string>? seen = kwargs.Count > 1 ? [] : null;
         foreach (var (name, value) in kwargs)
         {
-            if (!seen.Add(name))
+            if (seen is not null && !seen.Add(name))
             {
                 throw new StarlarkException($"Argument `{name}` of `{fn.Name}` was supplied more than once (repeated named argument)");
             }
@@ -971,9 +996,9 @@ public sealed class Interpreter
                 return EllipsisMarker.Instance;
 
             case TupleExpr t:
-                return new StarTuple(t.Items.Select(x => EvalExpr(x, f, cm)).ToArray());
+                return EvalTuple(t, f, cm);
             case ListExpr l:
-                return new StarList(l.Items.Select(x => EvalExpr(x, f, cm)).ToList());
+                return EvalList(l, f, cm);
             case DictExpr d:
             {
                 var dict = new StarDict();
@@ -1036,23 +1061,52 @@ public sealed class Interpreter
                 return MakeFunction("lambda", lam, lam.Parameters, null, lam.Body, f, cm);
 
             case ListComprehension lc:
-            {
-                var result = new List<object?>();
-                RunComprehension(lc.First, lc.Rest, f, cm, inner => result.Add(EvalExpr(lc.Item, inner, cm)));
-                return new StarList(result);
-            }
+                return EvalListComprehension(lc, f, cm);
             case DictComprehension dc:
-            {
-                var dict = new StarDict();
-                RunComprehension(dc.First, dc.Rest, f, cm,
-                    inner => dict.Set(EvalExpr(dc.Key, inner, cm), EvalExpr(dc.Value, inner, cm)));
-                return dict;
-            }
+                return EvalDictComprehension(dc, f, cm);
 
             case FStringExpr fs:
-                return StringFormat.Format(fs.Format, fs.Expressions.Select(x => EvalExpr(x, f, cm)).ToList(), []);
+                return EvalFString(fs, f, cm);
         }
         throw new InvalidOperationException(expr.GetType().Name);
+    }
+
+    // The cases below use lambdas. They live in their own methods so that EvalInner, which runs for every node, does not
+    // allocate a closure object on entry (the C# compiler creates a method's capture object before its first statement).
+
+    private StarTuple EvalTuple(TupleExpr t, Frame f, CodeMap cm)
+    {
+        var items = new object?[t.Items.Count];
+        for (int i = 0; i < items.Length; i++) items[i] = EvalExpr(t.Items[i], f, cm);
+        return new StarTuple(items);
+    }
+
+    private StarList EvalList(ListExpr l, Frame f, CodeMap cm)
+    {
+        var items = new List<object?>(l.Items.Count);
+        for (int i = 0; i < l.Items.Count; i++) items.Add(EvalExpr(l.Items[i], f, cm));
+        return new StarList(items);
+    }
+
+    private StarList EvalListComprehension(ListComprehension lc, Frame f, CodeMap cm)
+    {
+        var result = new List<object?>();
+        RunComprehension(lc.First, lc.Rest, f, cm, inner => result.Add(EvalExpr(lc.Item, inner, cm)));
+        return new StarList(result);
+    }
+
+    private StarDict EvalDictComprehension(DictComprehension dc, Frame f, CodeMap cm)
+    {
+        var dict = new StarDict();
+        RunComprehension(dc.First, dc.Rest, f, cm, inner => dict.Set(EvalExpr(dc.Key, inner, cm), EvalExpr(dc.Value, inner, cm)));
+        return dict;
+    }
+
+    private string EvalFString(FStringExpr fs, Frame f, CodeMap cm)
+    {
+        var values = new List<object?>(fs.Expressions.Count);
+        for (int i = 0; i < fs.Expressions.Count; i++) values.Add(EvalExpr(fs.Expressions[i], f, cm));
+        return StringFormat.Format(fs.Format, values, []);
     }
 
     private object? EvalBinary(BinaryExpr bin, Frame f, CodeMap cm)
@@ -1118,8 +1172,8 @@ public sealed class Interpreter
     private object? EvalCall(CallExpr call, Frame f, CodeMap cm)
     {
         var callee = EvalExpr(call.Function, f, cm);
-        var args = new List<object?>();
-        var kwargs = new List<KeyValuePair<string, object?>>();
+        var args = new List<object?>(call.Args.Count);
+        List<KeyValuePair<string, object?>>? kwargs = null;
         foreach (var a in call.Args)
         {
             switch (a)
@@ -1128,7 +1182,7 @@ public sealed class Interpreter
                     args.Add(EvalExpr(p.Value, f, cm));
                     break;
                 case NamedArgument n:
-                    kwargs.Add(new(n.Name.Value, EvalExpr(n.Value, f, cm)));
+                    (kwargs ??= []).Add(new(n.Name.Value, EvalExpr(n.Value, f, cm)));
                     break;
                 case StarArgument s:
                     args.AddRange(Ops.Materialize(EvalExpr(s.Value, f, cm)));
@@ -1145,7 +1199,7 @@ public sealed class Interpreter
                         {
                             throw new StarlarkException("Dictionary keys passed with ** must be strings");
                         }
-                        kwargs.Add(new(key, kv.Value));
+                        (kwargs ??= []).Add(new(key, kv.Value));
                     }
                     break;
                 }
@@ -1155,8 +1209,10 @@ public sealed class Interpreter
         {
             throw new StarlarkException($"Operation `call()` not supported on type '{Types.Name(callee)}': not callable");
         }
-        return c.Call(this, args, kwargs);
+        return c.Call(this, args, kwargs ?? NoKwargs);
     }
+
+    private static readonly List<KeyValuePair<string, object?>> NoKwargs = [];
 }
 
 /// <summary>Finds the names a function body binds locally: assignment targets, loop variables, nested defs, loads.</summary>

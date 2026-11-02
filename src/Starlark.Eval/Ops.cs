@@ -186,7 +186,7 @@ public static class Ops
             case BinOp.Percent: return Percent(a, b);
             case BinOp.BitAnd:
                 if (a is BigInteger x1 && b is BigInteger y1) return x1 & y1;
-                if (a is StarSet s1 && b is StarSet s2) return SetOp(s1, s2, (l, _) => l.Where(s2.Contains));
+                if (a is StarSet s1 && b is StarSet s2) return SetIntersection(s1, s2);
                 throw Err.Unsupported("&", a, b);
             case BinOp.BitOr:
                 if (a is BigInteger x2 && b is BigInteger y2) return x2 | y2;
@@ -203,14 +203,11 @@ public static class Ops
                     foreach (var kv in d2.Entries) r.Set(kv.Key, kv.Value);
                     return r;
                 }
-                if (a is StarSet u1 && b is StarSet u2) return SetOp(u1, u2, (l, r) => l.Concat(r));
+                if (a is StarSet u1 && b is StarSet u2) return SetUnion(u1, u2);
                 throw Err.Unsupported("|", a, b);
             case BinOp.BitXor:
                 if (a is BigInteger x3 && b is BigInteger y3) return x3 ^ y3;
-                if (a is StarSet e1 && b is StarSet e2)
-                {
-                    return SetOp(e1, e2, (l, r) => l.Where(x => !e2.Contains(x)).Concat(r.Where(x => !e1.Contains(x))));
-                }
+                if (a is StarSet e1 && b is StarSet e2) return SetSymmetricDifference(e1, e2);
                 throw Err.Unsupported("^", a, b);
             case BinOp.LeftShift:
                 if (a is BigInteger x4 && b is BigInteger y4)
@@ -232,6 +229,14 @@ public static class Ops
                 throw new InvalidOperationException(op.ToString());
         }
     }
+
+    // Each set operation is its own method: a lambda inside Binary or Subtract would make the compiler allocate a capture
+    // object at the top of that method, on every call, even for plain integer arithmetic.
+    private static StarSet SetIntersection(StarSet s1, StarSet s2) => SetOp(s1, s2, (l, _) => l.Where(s2.Contains));
+    private static StarSet SetUnion(StarSet u1, StarSet u2) => SetOp(u1, u2, (l, r) => l.Concat(r));
+    private static StarSet SetDifference(StarSet s1, StarSet s2) => SetOp(s1, s2, (l, _) => l.Where(e => !s2.Contains(e)));
+    private static StarSet SetSymmetricDifference(StarSet e1, StarSet e2) =>
+        SetOp(e1, e2, (l, r) => l.Where(x => !e2.Contains(x)).Concat(r.Where(x => !e1.Contains(x))));
 
     private static StarSet SetOp(StarSet a, StarSet b, Func<IEnumerable<object?>, IEnumerable<object?>, IEnumerable<object?>> f)
     {
@@ -297,7 +302,7 @@ public static class Ops
     {
         if (a is BigInteger x && b is BigInteger y) return x - y;
         if (IsNum(a) && IsNum(b)) return ToDouble(a) - ToDouble(b);
-        if (a is StarSet s1 && b is StarSet s2) return SetOp(s1, s2, (l, _) => l.Where(e => !s2.Contains(e)));
+        if (a is StarSet s1 && b is StarSet s2) return SetDifference(s1, s2);
         throw Err.Unsupported("-", a, b);
     }
 
