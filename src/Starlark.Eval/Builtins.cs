@@ -392,10 +392,74 @@ public static class Builtins
 
     // ---------------------------------------------------------------- sorted(), min(), max()
 
+    /// <summary>Lists at least this long are sorted in parallel when every key is a plain number or string.</summary>
+    internal const int ParallelSortThreshold = 8192;
+
+    /// <summary>
+    /// A stable parallel merge sort for keys whose comparison is pure (all strings, all ints, or all non-NaN floats), so no script code
+    /// or error can run on a worker thread. Returns null when the keys are not of that kind; the caller then sorts sequentially.
+    /// The result is identical to the sequential stable sort.
+    /// </summary>
+    private static List<object?>? TryParallelSort(List<object?> items, List<object?> keys, bool reverse)
+    {
+        var first = keys[0];
+        Func<object?, bool> ok = first switch
+        {
+            string => k => k is string,
+            BigInteger => k => k is BigInteger,
+            double => k => k is double d && !double.IsNaN(d),
+            _ => static _ => false,
+        };
+        if (first is double d0 && double.IsNaN(d0)) return null;
+        for (int i = 0; i < keys.Count; i++) if (!ok(keys[i])) return null;
+
+        int n = items.Count, sign = reverse ? -1 : 1;
+        var idx = new int[n];
+        for (int i = 0; i < n; i++) idx[i] = i;
+        // Ties fall back to the original position, so the sort is stable for either direction.
+        int Cmp(int a, int b)
+        {
+            int c = sign * Ops.Compare(keys[a], keys[b]);
+            return c != 0 ? c : a.CompareTo(b);
+        }
+
+        int parts = Math.Min(Environment.ProcessorCount, 16);
+        var bounds = new int[parts + 1];
+        for (int p = 0; p <= parts; p++) bounds[p] = (int)((long)n * p / parts);
+        var comparer = Comparer<int>.Create(Cmp);
+        Parallel.For(0, parts, p => Array.Sort(idx, bounds[p], bounds[p + 1] - bounds[p], comparer));
+
+        var src = idx;
+        var dst = new int[n];
+        for (int width = 1; width < parts; width *= 2)
+        {
+            int w = width;
+            var from = src;
+            var to = dst;
+            int pairs = (parts + 2 * w - 1) / (2 * w);
+            Parallel.For(0, pairs, q =>
+            {
+                int lo = bounds[q * 2 * w];
+                int mid = bounds[Math.Min(q * 2 * w + w, parts)];
+                int hi = bounds[Math.Min(q * 2 * w + 2 * w, parts)];
+                int a = lo, b = mid, o = lo;
+                while (a < mid && b < hi) to[o++] = Cmp(from[a], from[b]) <= 0 ? from[a++] : from[b++];
+                while (a < mid) to[o++] = from[a++];
+                while (b < hi) to[o++] = from[b++];
+            });
+            (src, dst) = (dst, src);
+        }
+
+        var result = new List<object?>(n);
+        for (int i = 0; i < n; i++) result.Add(items[src[i]]);
+        return result;
+    }
+
     internal static List<object?> Sort(Interpreter it, List<object?> items, object? key, bool reverse)
     {
         // The key function is called exactly once per element, in order.
         List<object?> keys = key is null ? items : items.Select(x => it.CallValue(key, [x])).ToList();
+        if (items.Count >= ParallelSortThreshold && TryParallelSort(items, keys, reverse) is { } sorted) return sorted;
         var idx = Enumerable.Range(0, items.Count).ToArray();
         int sign = reverse ? -1 : 1;
         var cmp = Comparer<int>.Create((i, j) => sign * Ops.Compare(keys[i], keys[j]));
