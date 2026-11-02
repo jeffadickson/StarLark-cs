@@ -423,6 +423,48 @@ public static class Ops
         throw Err.NotIterable(v);
     }
 
+    /// <summary>The most elements one operation may expand an iterable into (the same ceiling repetition uses).</summary>
+    public const int MaxMaterialized = 100_000_000;
+
+    /// <summary>
+    /// The length of <paramref name="v"/> when it is known without iterating (a list, tuple, dict, set or range), or null.
+    /// A range's length is exact even when it is far too big to enumerate.
+    /// </summary>
+    public static BigInteger? KnownLength(object? v) => v switch
+    {
+        StarRange r => r.Count,
+        StarList l => l.Count,
+        StarTuple t => t.Items.Length,
+        StarDict d => d.Count,
+        StarSet s => s.Count,
+        _ => null,
+    };
+
+    /// <summary>
+    /// Expands an iterable into a list. The size is checked up front when it is known, so a huge range fails at once
+    /// instead of after building millions of items, every element counts as a step (so step limits, deadlines and
+    /// cancellation apply), and the result must fit in the memory ceiling.
+    /// </summary>
+    public static List<object?> Materialize(object? v)
+    {
+        if (v is StarList l) return [.. l.Items];
+        if (KnownLength(v) is { } known)
+        {
+            if (known > MaxMaterialized) throw new StarlarkException($"Cannot expand {known} elements: the limit is {MaxMaterialized}");
+            MemoryBudget.CheckElements((long)known, 8);
+        }
+        var result = new List<object?>(KnownLength(v) is { } n ? (int)Math.Min((long)n, 1 << 16) : 0);
+        var ctx = ExecutionContext.Current;
+        foreach (var x in Iterate(v))
+        {
+            ctx?.Step();
+            if (result.Count >= MaxMaterialized) throw new StarlarkException($"Cannot expand more than {MaxMaterialized} elements");
+            result.Add(x);
+        }
+        MemoryBudget.CheckElements(result.Count, 8);
+        return result;
+    }
+
     private static IEnumerable<object?> IterateRange(StarRange r)
     {
         var n = r.Count;

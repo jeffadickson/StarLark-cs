@@ -473,7 +473,7 @@ public static class Methods
             var x = a.Required("x");
             a.Done();
             var l = (StarList)self;
-            l.AddRange(Ops.Iterate(x).ToList());
+            l.AddRange(Ops.Materialize(x));
             return null;
         };
         m["insert"] = (_, self, a) =>
@@ -597,12 +597,12 @@ public static class Methods
                 }
                 else
                 {
-                    foreach (var pair in Ops.Iterate(pairs).ToList())
+                    foreach (var pair in Ops.Materialize(pairs))
                     {
                         List<object?> kv;
                         try
                         {
-                            kv = Ops.Iterate(pair).ToList();
+                            kv = Ops.Materialize(pair);
                         }
                         catch (StarlarkException)
                         {
@@ -625,7 +625,7 @@ public static class Methods
         var all = new List<object?>();
         foreach (var o in a.Rest())
         {
-            foreach (var x in Ops.Iterate(o).ToList())
+            foreach (var x in Ops.Materialize(o))
             {
                 Hashing.CheckHashable(x);
                 all.Add(x);
@@ -757,7 +757,7 @@ public static class Methods
     {
         if (iterable is StarSet s) return s;
         var r = new StarSet();
-        foreach (var x in Ops.Iterate(iterable).ToList()) r.Add(x);
+        foreach (var x in Ops.Materialize(iterable)) r.Add(x);
         return r;
     }
 }

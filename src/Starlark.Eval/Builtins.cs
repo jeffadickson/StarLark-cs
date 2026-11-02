@@ -62,7 +62,7 @@ public static class Builtins
             var seq = a.Required("x");
             var start = a.OptInt("start") ?? BigInteger.Zero;
             var i = start;
-            return new StarList(Ops.Iterate(seq).ToList().Select(x => (object?)new StarTuple([i++, x])));
+            return new StarList(Ops.Materialize(seq).Select(x => (object?)new StarTuple([i++, x])));
         });
 
         u["fail"] = new Builtin("fail", (_, a, k) =>
@@ -104,7 +104,7 @@ public static class Builtins
         u["int"] = new Builtin("int", MakeInt);
 
         Add(u, "len", (_, a) => Ops.Len(a.Required("x")));
-        Add(u, "list", (_, a) => new StarList(a.Has("x") ? Ops.Iterate(a.Required("x")) : []));
+        Add(u, "list", (_, a) => new StarList(a.Has("x") ? Ops.Materialize(a.Required("x")) : []));
 
         u["max"] = new Builtin("max", (it, a, k) => MinMax(it, "max", a, k, 1));
         u["min"] = new Builtin("min", (it, a, k) => MinMax(it, "min", a, k, -1));
@@ -142,18 +142,18 @@ public static class Builtins
         });
 
         Add(u, "repr", (_, a) => Repr.Of(a.Required("x")));
-        Add(u, "reversed", (_, a) => new StarList(Ops.Iterate(a.Required("x")).Reverse()));
+        Add(u, "reversed", (_, a) => new StarList(Ops.Materialize(a.Required("x")).AsEnumerable().Reverse()));
         Add(u, "set", (_, a) =>
         {
             var s = new StarSet();
-            if (a.Has("x")) foreach (var x in Ops.Iterate(a.Required("x")).ToList()) s.Add(x);
+            if (a.Has("x")) foreach (var x in Ops.Materialize(a.Required("x"))) s.Add(x);
             return s;
         });
 
         u["sorted"] = new Builtin("sorted", (it, a, k) =>
         {
             var r = new ArgReader("sorted", a, k);
-            var items = Ops.Iterate(r.Required("x")).ToList();
+            var items = Ops.Materialize(r.Required("x"));
             var key = r.Optional("key");
             var reverse = r.Bool("reverse", false);
             r.Done();
@@ -165,13 +165,13 @@ public static class Builtins
             var v = a.Required("x");
             return v is string or StarBytes or StarUtf16 ? Repr.Str(v) : Repr.Of(v);
         });
-        Add(u, "tuple", (_, a) => new StarTuple(a.Has("x") ? Ops.Iterate(a.Required("x")).ToArray() : []));
+        Add(u, "tuple", (_, a) => new StarTuple(a.Has("x") ? Ops.Materialize(a.Required("x")).ToArray() : []));
         Add(u, "type", (_, a) => Types.Name(a.Required("x")));
 
         u["zip"] = new Builtin("zip", (_, a, k) =>
         {
             if (k.Count > 0) throw new StarlarkException($"Unexpected parameter named `{k[0].Key}` for call to `zip`");
-            var lists = a.Select(x => Ops.Iterate(x).ToList()).ToList();
+            var lists = a.Select(x => Ops.Materialize(x)).ToList();
             int n = lists.Count == 0 ? 0 : lists.Min(l => l.Count);
             return new StarList(Enumerable.Range(0, n).Select(i => (object?)new StarTuple(lists.Select(l => l[i]).ToArray())));
         });
@@ -259,12 +259,12 @@ public static class Builtins
             foreach (var kv in src.Entries.ToList()) d.Set(kv.Key, kv.Value);
             return;
         }
-        foreach (var pair in Ops.Iterate(source).ToList())
+        foreach (var pair in Ops.Materialize(source))
         {
             List<object?> kv;
             try
             {
-                kv = Ops.Iterate(pair).ToList();
+                kv = Ops.Materialize(pair);
             }
             catch (StarlarkException)
             {
@@ -419,7 +419,7 @@ public static class Builtins
             else throw new StarlarkException($"Unexpected parameter named `{kv.Key}` for call to `{name}`");
         }
         if (a.Count == 0) throw new StarlarkException($"{name}() requires at least one positional argument");
-        var items = a.Count == 1 ? Ops.Iterate(a[0]).ToList() : a.ToList();
+        var items = a.Count == 1 ? Ops.Materialize(a[0]) : a.ToList();
         if (items.Count == 0) throw new StarlarkException($"Empty sequence: {name}() argument is an empty sequence");
         var keys = key is null ? items : items.Select(x => it.CallValue(key, [x])).ToList();
         int best = 0;

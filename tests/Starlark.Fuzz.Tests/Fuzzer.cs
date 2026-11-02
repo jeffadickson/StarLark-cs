@@ -234,6 +234,12 @@ public static class Oracle
     /// <summary>Time allowed for a single input before it is reported as a hang.</summary>
     public static readonly TimeSpan Budget = TimeSpan.FromSeconds(10);
 
+    /// <summary>Statements and expressions one generated program may evaluate before it is stopped.</summary>
+    public const long StepBudget = 2_000_000;
+
+    /// <summary>The largest single object (in bytes) one generated program may build.</summary>
+    public const long AllocationBudget = 64L * 1024 * 1024;
+
     public static Dialect Dialect { get; } = Dialect.AllOptionsInternal;
 
     /// <summary>
@@ -302,12 +308,20 @@ public static class Oracle
             AllowGlobalReassign = true,
             Print = _ => { },
             StringElements = elements,
+            // Generated programs can ask for enormous loops and ranges. The library has limits for exactly this, so the
+            // harness uses them: a program that runs out of budget is a normal outcome, not a hang.
+            MaxSteps = Oracle.StepBudget,
+            MaxAllocatedBytes = Oracle.AllocationBudget,
         };
         try
         {
             it.Execute("fuzz.star", src);
         }
         catch (StarlarkException e)
+        {
+            _ = e.Message;
+        }
+        catch (ExecutionLimitException e)
         {
             _ = e.Message;
         }

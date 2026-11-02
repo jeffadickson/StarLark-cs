@@ -198,13 +198,15 @@ public class FuzzTests
                 Dialect = Dialect.AllOptionsInternal with { EnableTypes = DialectTypes.Enable },
                 AllowGlobalReassign = true,
                 Print = _ => { },
+                MaxSteps = Oracle.StepBudget,
+                MaxAllocatedBytes = Oracle.AllocationBudget,
             };
             try { it.Execute("fuzz.star", s); }
             catch (StarlarkException e) when (e.RawMessage.Contains("does not match the type annotation"))
             {
                 throw new InvalidOperationException("annotation error in an unannotated program: " + e.RawMessage);
             }
-            catch (Exception e) when (e is StarlarkException or StarlarkSyntaxException)
+            catch (Exception e) when (e is StarlarkException or StarlarkSyntaxException or ExecutionLimitException)
             {
             }
         });

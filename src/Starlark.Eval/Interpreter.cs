@@ -598,7 +598,14 @@ public sealed class Interpreter
                 break;
             case TupleTarget t:
             {
-                var items = Ops.Iterate(value).ToList();
+                // A list, tuple, dict, set or range knows its length, so a mismatch is reported without expanding it.
+                if (Ops.KnownLength(value) is { } known && known != t.Items.Count)
+                {
+                    throw new StarlarkException(known < t.Items.Count
+                        ? $"Too few values to unpack (got {known}, expected {t.Items.Count}): length mismatch"
+                        : $"Too many values to unpack (got {known}, expected {t.Items.Count}): length mismatch");
+                }
+                var items = Ops.Materialize(value);
                 if (items.Count != t.Items.Count)
                 {
                     throw new StarlarkException(items.Count < t.Items.Count
@@ -625,7 +632,7 @@ public sealed class Interpreter
             switch (m.Op)
             {
                 case Syntax.AssignOp.Add when old is StarList list:
-                    list.AddRange(Ops.Iterate(rhs).ToList());
+                    list.AddRange(Ops.Materialize(rhs));
                     return list;
                 case Syntax.AssignOp.BitOr when old is StarDict d && rhs is StarDict other:
                     foreach (var kv in other.Entries.ToList()) d.Set(kv.Key, kv.Value);
@@ -1105,7 +1112,7 @@ public sealed class Interpreter
                     kwargs.Add(new(n.Name.Value, EvalExpr(n.Value, f, cm)));
                     break;
                 case StarArgument s:
-                    args.AddRange(Ops.Iterate(EvalExpr(s.Value, f, cm)).ToList());
+                    args.AddRange(Ops.Materialize(EvalExpr(s.Value, f, cm)));
                     break;
                 case StarStarArgument ss:
                 {
