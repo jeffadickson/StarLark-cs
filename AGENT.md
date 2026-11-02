@@ -1,9 +1,9 @@
 # starlark-cs: orientation for AI agents and people
 
-Planned repo move: this project is to become its own repository (`dev\starlark-cs`). When that happens,
-`starlark-spec` moves to `docs\spec`, and `starlark-rust-src` stays an ignored reference copy of
-https://github.com/facebook/starlark-rust. Today all three are siblings inside the `clipforge` git repo
-(`..\starlark-spec`, `..\starlark-rust-src`); paths below are relative to `starlark-cs\` unless stated.
+This project is its own repository (`dev\starlark-cs`, remote https://github.com/jeffadickson/StarLark-cs). It was
+moved out of the old `clipforge` container repo on 2026-11-02. The spec now lives in `docs\spec`; `starlark-rust-src`
+is an ignored reference copy of https://github.com/facebook/starlark-rust kept as a sibling (`..\starlark-rust-src`).
+Paths below are relative to `starlark-cs\` unless stated.
 
 ## 1. What this is
 
@@ -22,7 +22,7 @@ A C# (net10.0) implementation of the Starlark language, split into two libraries
 - Design decisions recorded in memory notes (2026-10-22): ints are BigInteger; strings default to UTF-16 elements
   (spec K=16; `Interpreter.StringElements = StringElements.Utf8` gives Go/Rust offsets); floats print like Go/Rust.
 
-References (read-only): `..\starlark-rust-src` (snapshot of main, exact commit not determined) and `..\starlark-spec`
+References (read-only): `..\starlark-rust-src` (snapshot of main, exact commit not determined) and `docs\spec`
 (`spec.md` plus `conformance/{go,java,rust}`, `starlark_test.py`, `util.bzl`; copy of bazelbuild/starlark).
 
 ### Layout
@@ -64,12 +64,12 @@ property tests). All test projects use xunit. Tests carry XML doc comments; keep
 
 There is no StrictDoc / sdoc requirements file and no README in this project (searched; none found). Requirements are
 implicit in these places:
-- The spec: `..\starlark-spec\spec.md` (future `docs\spec`).
+- The spec: `docs\spec\spec.md`.
 - `docs/DEVIATIONS.md`: where behaviour intentionally differs (UTF-16 default, `dict.update(None)` is an error,
   `list.pop` accepts negative indexes, recursion is an error with call depth capped at 150) plus embedding rules
   (Interpreter not thread-safe; `StringElements` is thread-static during a run; no memory limit).
 - Upstream conformance: `tests/Starlark.Eval.Tests/Conformance/{go,java,rust}` hold 11 + 21 + 7 = 39 `.star` files plus
-  `util.bzl`; file names match `..\starlark-spec\conformance` one to one (counts equal, contents not diffed by me).
+  `util.bzl`; file names match `docs\spec\conformance` one to one (counts equal, contents not diffed by me).
   `ConformanceTests.cs` follows `starlark_test.py`: chunks split at `---`, `### regex` marks an expected error,
   and the `rust` expectation wins where implementations differ. All chunks are theory cases, no skip list.
 - Go suites with a host `asserts` module: `tests/Starlark.Eval.Tests/GoSuites/{float,set}.star` via `GoSuiteTests.cs`.
@@ -77,7 +77,7 @@ implicit in these places:
 - Parser/lexer fidelity to Rust: `tests/Starlark.Syntax.Tests/Goldens/{def,grammar,lexer}` (golden files produced from
   Rust behaviour) and `Testcases/` (167 corpus files; also the bench corpus candidates).
 - Spec examples: `SpecExampleTests.cs`. Type system and checker: `TypeSystemTests.cs`, `TypeChecker*Tests.cs`.
-- There is no automated tracking of upstream drift (no script comparing `starlark-rust-src` or `starlark-spec` to the
+- There is no automated tracking of upstream drift (no script comparing `starlark-rust-src` or `docs\spec` to the
   copied testdata); tracking is by hand.
 
 ## 3. Open work (verified)

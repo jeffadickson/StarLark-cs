@@ -29,7 +29,7 @@ ELEMENTS:
 
 [FREETEXT]
 What the lexer, parser, interpreter, type system and static checker shall do. The normative source is the Starlark
-language specification (starlark-spec/spec.md). Where this implementation chooses differently, the choice is recorded
+language specification (docs/spec/spec.md). Where this implementation chooses differently, the choice is recorded
 in docs/DEVIATIONS.md.
 [/FREETEXT]
 
