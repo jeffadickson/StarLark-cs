@@ -51,6 +51,57 @@ public class AppTests
     }
 
     [Fact]
+    public void AdventureWalkthroughWinsTheGame()
+    {
+        var sw = new StringWriter();
+        Assert.Equal(0, Adventure.Program.Run(sw, Adventure.Program.Walkthrough));
+        var o = sw.ToString();
+        Assert.Contains("Carved into the wood", o);
+        Assert.Contains("The bronze key turns with a groan", o);
+        Assert.Contains("*** YOU HAVE WON ***", o);
+        Assert.Contains("Score: 105 in 15 turns.", o);
+        Assert.DoesNotContain("the game script failed", o);
+    }
+
+    [Fact]
+    public void AdventureRulesHold()
+    {
+        string Play(params string[] commands)
+        {
+            var sw = new StringWriter();
+            Adventure.Program.Run(sw, commands);
+            return sw.ToString();
+        }
+
+        // Walking into the dark without a lit lamp is fatal, and the game is then over.
+        var dead = Play("north", "in", "down");
+        Assert.Contains("YOU HAVE DIED", dead);
+
+        // The locked door stays locked without the key.
+        Assert.Contains("is locked", Play("take lamp", "north", "in", "light lamp", "down", "east", "east"));
+
+        // The lamp can be taken, the sign cannot, and unknown words get a polite answer.
+        var o = Play("take sign", "dance", "take lamp", "inventory");
+        Assert.Contains("You can't take the sign.", o);
+        Assert.Contains("I don't know how to \"dance\".", o);
+        Assert.Contains("You are carrying: lamp.", o);
+
+        // The same input always gives the same game.
+        Assert.Equal(Play("look", "take lamp", "east"), Play("look", "take lamp", "east"));
+    }
+
+    [Fact]
+    public void RayTracerPictureDoesNotDependOnTheNumberOfWorkers()
+    {
+        var sw = new StringWriter();
+        Assert.Equal(0, RayTracer.Program.Run(sw, (32, 14), [1, 3, 8]));
+        var o = sw.ToString();
+        Assert.Contains("Every worker count produced exactly the same picture.", o);
+        Assert.DoesNotContain("MISMATCH", o);
+        Assert.Equal(3, o.Split('\n').Count(l => l.Contains("worker(s)")));
+    }
+
+    [Fact]
     public void ConfigInspectorValidatesAndSetsExitCode()
     {
         var sw = new StringWriter();

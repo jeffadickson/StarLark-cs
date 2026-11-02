@@ -816,8 +816,13 @@ internal sealed class Parser
                         _ => throw GrammarUtil.FStringConvError(bl, id.End, _state),
                     };
                 }
+                string? spec = null;
+                if (PeekIs(TokenKind.FStringSpec))
+                {
+                    spec = Take().Token!.Text!;
+                }
                 Expect(TokenKind.FStringExprEnd);
-                parts.Add(new FStringElement.Expression(expr, conv));
+                parts.Add(new FStringElement.Expression(expr, conv, spec));
             }
             else
             {

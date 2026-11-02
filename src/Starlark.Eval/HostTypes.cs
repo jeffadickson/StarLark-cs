@@ -39,14 +39,14 @@ public static class HostTypes
     private static Ty Ty0(Type type)
     {
         var fields = new List<KeyValuePair<string, Ty>>();
-        foreach (var p in type.GetProperties(BindingFlags.Public | BindingFlags.Instance).Where(p => p.CanRead && p.GetIndexParameters().Length == 0))
+        foreach (var (property, name) in ExposedMembers.Properties(type, true))
         {
-            fields.Add(new(Interop.SnakeCase(p.Name), ForResult(p.PropertyType, 1)));
+            fields.Add(new(name, ForResult(property.PropertyType, 1)));
         }
-        foreach (var m in type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly).Where(m => !m.IsSpecialName))
+        foreach (var (m, name) in ExposedMembers.Methods(type, true))
         {
             var sig = SignatureOf(m.Name, m);
-            fields.Add(new(Interop.SnakeCase(m.Name), new Ty.CallableTy(sig.Params.Select(p => p.Type).ToList(), sig.Result)));
+            fields.Add(new(name, new Ty.CallableTy(sig.Params.Select(p => p.Type).ToList(), sig.Result)));
         }
         return new Ty.StructTy(fields);
     }
@@ -121,9 +121,8 @@ public static class HostTypes
         if (typeof(IEnumerable).IsAssignableFrom(t) || !t.IsClass && !t.IsValueType) return Ty.Any;
         if (depth >= MaxDepth) return Ty.Any;
         // Any other object becomes a struct of its public readable properties.
-        var fields = t.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .Where(p => p.CanRead && p.GetIndexParameters().Length == 0)
-            .Select(p => new KeyValuePair<string, Ty>(Interop.SnakeCase(p.Name), ForResult(p.PropertyType, depth + 1)))
+        var fields = ExposedMembers.Properties(t, true)
+            .Select(p => new KeyValuePair<string, Ty>(p.Name, ForResult(p.Property.PropertyType, depth + 1)))
             .ToList();
         return new Ty.StructTy(fields);
     }

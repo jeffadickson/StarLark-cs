@@ -94,8 +94,8 @@ public static class Interop
         {
             return new StarTuple(type.GetFields().Select(f => ToStar(f.GetValue(value), snake, depth + 1)).ToArray());
         }
-        return new StarStruct(Properties(type).Select(p =>
-            new KeyValuePair<string, object?>(snake ? SnakeCase(p.Name) : p.Name, ToStar(p.GetValue(value), snake, depth + 1))));
+        return new StarStruct(ExposedMembers.Properties(type, snake).Select(p =>
+            new KeyValuePair<string, object?>(p.Name, ToStar(p.Property.GetValue(value), snake, depth + 1))));
     }
 
     private static IEnumerable<PropertyInfo> Properties(Type type) =>
@@ -249,16 +249,14 @@ public static class Interop
     {
         var fields = new List<KeyValuePair<string, object?>>();
         var type = target.GetType();
-        foreach (var p in Properties(type))
+        foreach (var (property, name) in ExposedMembers.Properties(type, snakeCase))
         {
-            fields.Add(new(snakeCase ? SnakeCase(p.Name) : p.Name, ToStar(p.GetValue(target), snakeCase)));
+            fields.Add(new(name, ToStar(property.GetValue(target), snakeCase)));
         }
-        foreach (var m in type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
-                     .Where(m => !m.IsSpecialName))
+        foreach (var (m, name) in ExposedMembers.Methods(type, snakeCase))
         {
             var method = m;
-            fields.Add(new(snakeCase ? SnakeCase(m.Name) : m.Name,
-                new Builtin(m.Name, (interp, args, kwargs) => Invoke(interp, target, method, args, kwargs, snakeCase))));
+            fields.Add(new(name, new Builtin(name, (interp, args, kwargs) => Invoke(interp, target, method, args, kwargs, snakeCase, displayName: name))));
         }
         return new StarStruct(fields);
     }

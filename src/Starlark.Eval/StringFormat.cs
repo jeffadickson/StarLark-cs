@@ -5,7 +5,7 @@ using System.Text;
 namespace Starlark.Eval;
 
 /// <summary>Implements <c>"..." % args</c> (string interpolation) and <c>"...".format(...)</c>.</summary>
-public static class StringFormat
+public static partial class StringFormat
 {
     // ---------------------------------------------------------------- "format" % args
 
@@ -56,6 +56,14 @@ public static class StringFormat
                 }
                 if (next >= args.Length) throw new StarlarkException("Not enough arguments for format string");
                 return args[next++];
+            }
+
+            // Flags, width and precision (an extension): %-8s, %05d, %+.2f, %*d. Plain conversions are unaffected.
+            if (i < fmt.Length && (fmt[i] is '-' or '+' or ' ' or '#' or '*' or '.' or (>= '0' and <= '9')))
+            {
+                var spec = ParsePercentSpec(fmt, ref i, Operand);
+                sb.Append(ApplyPercent(fmt[i], Operand(), spec));
+                continue;
             }
 
             switch (fmt[i])
@@ -184,6 +192,13 @@ public static class StringFormat
                 }
 
                 string conv = "s";
+                string? formatSpec = null;
+                int colon = field.IndexOf(':');
+                if (colon >= 0)
+                {
+                    formatSpec = field[(colon + 1)..];
+                    field = field[..colon];
+                }
                 int bang = field.IndexOf('!');
                 if (bang >= 0)
                 {
@@ -220,12 +235,15 @@ public static class StringFormat
                     value = kv.Value;
                 }
 
-                sb.Append(conv switch
+                object? shown = conv switch
                 {
-                    "s" => Repr.Str(value),
+                    "s" => value,
                     "r" => Repr.Of(value),
                     _ => throw new StarlarkException($"Unknown conversion '!{conv}': expected 's' or 'r'"),
-                });
+                };
+                sb.Append(formatSpec is null
+                    ? Repr.Str(conv == "r" ? Repr.Of(value) : value)
+                    : FormatWithSpec(shown, formatSpec));
             }
             else if (c == '}')
             {

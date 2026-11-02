@@ -10,10 +10,12 @@
     <Project Path="tests/Starlark.Syntax.Tests/Starlark.Syntax.Tests.csproj" />
   </Folder>
   <Folder Name="/apps/">
+    <Project Path="apps/Adventure/Adventure.csproj" />
     <Project Path="apps/BuildRules/BuildRules.csproj" />
     <Project Path="apps/ConfigInspector/ConfigInspector.csproj" />
     <Project Path="apps/GameAI/GameAI.csproj" />
     <Project Path="apps/PolicyEngine/PolicyEngine.csproj" />
+    <Project Path="apps/RayTracer/RayTracer.csproj" />
     <Project Path="apps/ReportPipeline/ReportPipeline.csproj" />
   </Folder>
   <Folder Name="/tools/">

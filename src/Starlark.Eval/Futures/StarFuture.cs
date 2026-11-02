@@ -125,6 +125,7 @@ internal sealed class StarFuture : IHostValue
             {
                 var copy = new StarlarkException(s.RawMessage);
                 if (s.Span is { } span && s.CodeMap is { } map) copy.AttachLocation(span, map);
+                copy.CopyStackFrom(s);
                 return copy;
             }
             case ExecutionLimitException l:

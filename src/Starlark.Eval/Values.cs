@@ -35,8 +35,88 @@ public sealed class StarlarkException : Exception
             Span = span;
             CodeMap = cm;
         }
+        // The first node an unwinding exception reaches inside a function is where control was in that function.
+        if (!_haveHere)
+        {
+            _here = (span, cm);
+            _haveHere = true;
+        }
         return false;
     }
+
+    private readonly List<StackFrame> _frames = [];
+    private (Span Span, CodeMap Map) _here;
+    private bool _haveHere;
+
+    /// <summary>
+    /// The script functions the error passed through, innermost first, ending with the top-level code. Each entry
+    /// names the function and the place inside it where control was: the failing statement for the innermost, the
+    /// call for the others.
+    /// </summary>
+    public IReadOnlyList<StackFrame> CallStack
+    {
+        get
+        {
+            if (!_haveHere) return _frames;
+            return [.. _frames, new StackFrame("<module>", _here.Span, _here.Map)];
+        }
+    }
+
+    /// <summary>Called as the exception leaves a script function; closes that function's frame.</summary>
+    internal bool LeaveFrame(string function)
+    {
+        _frames.Add(_haveHere ? new StackFrame(function, _here.Span, _here.Map) : new StackFrame(function, null, null));
+        _haveHere = false;
+        return false;
+    }
+
+    /// <summary>Copies another exception's call stack, for an error re-raised on another thread.</summary>
+    internal void CopyStackFrom(StarlarkException other)
+    {
+        _frames.Clear();
+        _frames.AddRange(other._frames);
+        _here = other._here;
+        _haveHere = other._haveHere;
+    }
+
+    /// <summary>
+    /// The message followed by a traceback, innermost call last, in the style of other interpreters:
+    /// <c>  file:line:col in function</c> for each frame. <see cref="Message"/> itself is unchanged.
+    /// </summary>
+    public string MessageWithStack()
+    {
+        var frames = CallStack;
+        if (frames.Count <= 1) return Message;
+        var sb = new System.Text.StringBuilder(Message).AppendLine().AppendLine();
+        sb.AppendLine("Traceback (most recent call last):");
+        for (int i = frames.Count - 1; i >= 0; i--)
+        {
+            var f = frames[i];
+            sb.Append("  ").Append(f.Location ?? "<unknown>").Append(" in ").AppendLine(f.Function);
+        }
+        return sb.ToString().TrimEnd();
+    }
+}
+
+/// <summary>One entry of <see cref="StarlarkException.CallStack"/>.</summary>
+/// <param name="Function">The function's name, or <c>&lt;module&gt;</c> for top-level code.</param>
+/// <param name="Span">Where control was inside that function, or null if unknown.</param>
+/// <param name="CodeMap">The source the span refers to.</param>
+public sealed record StackFrame(string Function, Span? Span, CodeMap? CodeMap)
+{
+    /// <summary><c>file:line:column</c>, or null if the position is unknown.</summary>
+    public string? Location
+    {
+        get
+        {
+            if (Span is not { } s || CodeMap is not { } cm) return null;
+            var begin = cm.ResolveSpan(s).Begin;
+            return $"{cm.FileName}:{begin}";
+        }
+    }
+
+    /// <summary>The 1-based line, or 0 if unknown.</summary>
+    public int Line => Span is { } s && CodeMap is { } cm ? cm.ResolveSpan(s).Begin.Line + 1 : 0;
 }
 
 /// <summary>Constructors for the error messages shared across the runtime.</summary>

@@ -22,6 +22,9 @@ public enum TokenKind
     FStringExprStart,
     FStringExprEnd,
     FStringBang,
+
+    /// <summary>The format spec after a <c>:</c> in an f-string field, such as <c>&gt;8.2f</c>. Text is the spec.</summary>
+    FStringSpec,
     FStringEnd,
 
     // Keywords.
@@ -131,6 +134,7 @@ public sealed class Token : IEquatable<Token>
     public static Token String(string s) => new(TokenKind.String, s);
     public static Token Comment(string s) => new(TokenKind.Comment, s);
     public static Token FStringText(string s) => new(TokenKind.FStringText, s);
+    public static Token FStringSpec(string s) => new(TokenKind.FStringSpec, s);
     public static Token Int(TokenInt i) => new(TokenKind.Int, intValue: i);
     public static Token Float(double d) => new(TokenKind.Float, floatValue: d);
     public static Token Bytes(byte[] b) => new(TokenKind.Bytes, bytes: b);
@@ -146,7 +150,7 @@ public sealed class Token : IEquatable<Token>
         }
         return Kind switch
         {
-            TokenKind.Identifier or TokenKind.String or TokenKind.Comment or TokenKind.FStringText => Text == other.Text,
+            TokenKind.Identifier or TokenKind.String or TokenKind.Comment or TokenKind.FStringText or TokenKind.FStringSpec => Text == other.Text,
             TokenKind.Int => IntValue.Equals(other.IntValue),
             TokenKind.Float => FloatValue.Equals(other.FloatValue),
             TokenKind.Bytes => BytesValue.AsSpan().SequenceEqual(other.BytesValue),
@@ -231,6 +235,7 @@ public sealed class Token : IEquatable<Token>
         TokenKind.FStringExprStart => "f-string expression start '{'",
         TokenKind.FStringExprEnd => "f-string expression end '}'",
         TokenKind.FStringBang => "f-string bang '!'",
+        TokenKind.FStringSpec => $"f-string format spec {RustFormat.DebugStr(Text!)}",
         TokenKind.FStringEnd => "f-string end",
         TokenKind.Bytes => $"bytes literal ({BytesValue!.Length} bytes)",
         TokenKind.Comment => $"comment '{Text}'",

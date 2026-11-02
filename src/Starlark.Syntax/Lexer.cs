@@ -637,6 +637,25 @@ public sealed class Lexer
                 return new Lexeme(start, Token.Of(TokenKind.FStringBang), start + 1);
             }
 
+            // A colon at the top level of an f-string field starts a format spec, which runs to the closing brace.
+            if (AtFStringExprTopLevel && _raw.TokEnd < _codemap.Source.Length && _codemap.Source[_raw.TokEnd] == ':')
+            {
+                int colon = _raw.TokEnd;
+                int end = _codemap.Source.IndexOf('}', colon + 1);
+                int quote = _codemap.Source.IndexOfAny([(char)10, (char)13, QuoteChar(_fstrings[^1].Quote)], colon + 1);
+                if (end < 0 || (quote >= 0 && quote < end))
+                {
+                    return ErrSpan("f-string format spec is not closed by '}'", colon, Math.Min(_codemap.Source.Length, colon + 1));
+                }
+                string spec = _codemap.Source.Substring(colon + 1, end - colon - 1);
+                if (spec.Contains('{'))
+                {
+                    return ErrSpan("nested replacement fields in an f-string format spec are not supported", colon, end);
+                }
+                _raw.Bump(end - colon);
+                return new Lexeme(colon, Token.FStringSpec(spec), end);
+            }
+
             var r = _raw.Next(out var tok);
             if (r == RawResult.End)
             {

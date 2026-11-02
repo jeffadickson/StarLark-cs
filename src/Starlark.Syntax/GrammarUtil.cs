@@ -6,7 +6,7 @@ namespace Starlark.Syntax;
 internal abstract record FStringElement
 {
     public sealed record Text(string Value) : FStringElement;
-    public sealed record Expression(Expr Expr, FStringConv Conv) : FStringElement;
+    public sealed record Expression(Expr Expr, FStringConv Conv, string? Spec = null) : FStringElement;
 }
 
 /// <summary>Code called by the parser to handle cases not expressible in the grammar itself.</summary>
@@ -97,7 +97,9 @@ internal static class GrammarUtil
                     break;
                 case FStringElement.Expression e:
                     expressions.Add(e.Expr);
-                    format.Append(e.Conv == FStringConv.Repr ? "{!r}" : "{}");
+                    format.Append('{').Append(e.Conv == FStringConv.Repr ? "!r" : "");
+                    if (e.Spec is not null) format.Append(':').Append(e.Spec);
+                    format.Append('}');
                     break;
             }
         }

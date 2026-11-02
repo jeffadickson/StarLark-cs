@@ -19,6 +19,8 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Starlark.Eval\Starlark.Eval.csproj" />
+    <ProjectReference Include="..\..\apps\Adventure\Adventure.csproj" />
+    <ProjectReference Include="..\..\apps\RayTracer\RayTracer.csproj" />
     <ProjectReference Include="..\..\apps\BuildRules\BuildRules.csproj" />
     <ProjectReference Include="..\..\apps\PolicyEngine\PolicyEngine.csproj" />
     <ProjectReference Include="..\..\apps\GameAI\GameAI.csproj" />

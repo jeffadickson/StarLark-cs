@@ -808,6 +808,10 @@ public sealed class Interpreter
             if (!ctx.IsTask) Futures.FutureBuiltins.CheckCallCollected(ctx, spawnedBefore);
             return result;
         }
+        catch (StarlarkException e) when (e.LeaveFrame(fn.Name))
+        {
+            throw;   // never reached: the filter always returns false and only records the frame
+        }
         finally
         {
             ctx.Depth--;
