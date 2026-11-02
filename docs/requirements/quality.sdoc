@@ -84,23 +84,26 @@ VERIFICATION: Starlark.Fuzz.Tests (InteropProperties)
 
 [REQUIREMENT]
 UID: QA-TST-006
-STATUS: Open
+STATUS: Active
 TITLE: Mutation testing
 STATEMENT: >>>
 Stryker.NET shall run against Starlark.Eval and Starlark.Syntax with the configuration in stryker-config.json, and the
 build shall fail below the break threshold.
 <<<
-COMMENT: Configuration is written; installing the dotnet tool was blocked and must be done by the user.
+VERIFICATION: stryker-config.json; tools/MutantReport; OpsMutationTests, MethodsMutationTests
+COMMENT: Ops.cs went 73.5% to 93.7% and Methods.cs 79.2% to 84.8% after adding survivor tests. Values, StringFormat, Json, Interpreter, the checker, Ty and Interop are not yet run.
 
 [REQUIREMENT]
 UID: QA-TST-007
-STATUS: Open
+STATUS: Active
 TITLE: Fourteen-hour soak
 STATEMENT: >>>
 A C# soak tool shall run the fuzzers and property tests in a loop for a configurable duration (default 14 hours), with
 a fresh seed per round, a wall-clock limit per input, failing inputs written to disk, periodic progress and memory
 logging, and the ability to resume.
 <<<
+VERIFICATION: tools/Soak; a first 5-hour run found 116 failing rounds and 6 hangs, all fixed (BoundedExpansionTests)
+COMMENT: Part A of an 18-hour run (three 6-hour parts with a fix pass between) is queued; mark Implemented when the run completes clean.
 
 [/SECTION]
 
