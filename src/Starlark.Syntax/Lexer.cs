@@ -645,11 +645,13 @@ public sealed class Lexer
                 int quote = _codemap.Source.IndexOfAny([(char)10, (char)13, QuoteChar(_fstrings[^1].Quote)], colon + 1);
                 if (end < 0 || (quote >= 0 && quote < end))
                 {
+                    _raw.Bump(1);   // step past the colon, or the same error would be produced forever
                     return ErrSpan("f-string format spec is not closed by '}'", colon, Math.Min(_codemap.Source.Length, colon + 1));
                 }
                 string spec = _codemap.Source.Substring(colon + 1, end - colon - 1);
                 if (spec.Contains('{'))
                 {
+                    _raw.Bump(end - colon);   // skip the whole spec so lexing continues after it
                     return ErrSpan("nested replacement fields in an f-string format spec are not supported", colon, end);
                 }
                 _raw.Bump(end - colon);

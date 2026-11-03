@@ -6,10 +6,15 @@ using System.Text.Json;
 //
 //   Soak --tests <Starlark.Fuzz.Tests.dll> [--out soak-out] [--start-at HH:mm] [--hours 10] [--workers 4]
 //        [--iterations 200000] [--property-tests 5000] [--round-minutes 30] [--resume]
+//        [--child-gb 3] [--min-free-gb 4] [--min-disk-gb 10]
 //
 // Each round is one `dotnet test` process with its own STARLARK_FUZZ_SEED range, so a hung or runaway input kills only
 // that round. A round that exceeds --round-minutes is killed and recorded as a hang. Failing rounds keep their full
 // log under <out>/failures. A checkpoint is written after every round so --resume continues where it stopped.
+//
+// Guardrails, so an unattended run cannot take the machine down: every child gets a heap cap (--child-gb) and is killed
+// and recorded as a MEMORY failure if its working set passes it; if free memory on the machine falls below --min-free-gb or
+// free disk on the output drive below --min-disk-gb, the biggest child is killed and new rounds wait until there is room.
 
 var opt = Options.Parse(args);
 Directory.CreateDirectory(opt.Out);
@@ -79,10 +84,12 @@ void RunRound(long seed, int worker)
         RedirectStandardError = true,
         UseShellExecute = false,
     };
+    psi.Environment["DOTNET_GCHeapHardLimit"] = ((long)(opt.ChildGb * 1073741824)).ToString("X");   // hex, as the runtime expects
     psi.Environment["STARLARK_FUZZ_SEED"] = seed.ToString();
     psi.Environment["STARLARK_FUZZ_ITERATIONS"] = opt.Iterations.ToString();
     psi.Environment["STARLARK_PROPERTY_TESTS"] = opt.PropertyTests.ToString();
 
+    WaitForRoom();
     var log = new System.Text.StringBuilder();
     using var p = new Process { StartInfo = psi };
     p.OutputDataReceived += (_, e) => { if (e.Data is not null) lock (log) log.AppendLine(e.Data); };
@@ -92,11 +99,17 @@ void RunRound(long seed, int worker)
     p.BeginOutputReadLine();
     p.BeginErrorReadLine();
 
-    bool hung = false;
+    bool hung = false, overMemory = false;
     var limit = TimeSpan.FromMinutes(opt.RoundMinutes);
     while (!p.WaitForExit(5000))
     {
-        TrackMemory(p);
+        long used = TrackMemory(p);
+        if (used > (long)(opt.ChildGb * 1073741824 * 1.1) || LowOnResources(out _))
+        {
+            overMemory = true;
+            try { p.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            break;
+        }
         if (DateTime.Now - started > limit || (DateTime.Now > deadline + TimeSpan.FromMinutes(opt.RoundMinutes)))
         {
             hung = true;
@@ -107,7 +120,7 @@ void RunRound(long seed, int worker)
     p.WaitForExit();
     string text;
     lock (log) text = log.ToString();
-    bool failed = !hung && p.ExitCode != 0;
+    bool failed = !hung && (overMemory || p.ExitCode != 0);
 
     lock (gate)
     {
@@ -121,9 +134,9 @@ void RunRound(long seed, int worker)
     string name = $"seed-{seed}-w{worker}";
     if (hung || failed)
     {
-        File.WriteAllText(Path.Combine(opt.Out, "failures", name + (hung ? "-HANG" : "") + ".log"),
-            $"seed={seed} iterations={opt.Iterations} propertyTests={opt.PropertyTests} hung={hung}\n{text}");
-        Log($"{(hung ? "HANG" : "FAIL")} round seed={seed} (log kept in failures/)");
+        File.WriteAllText(Path.Combine(opt.Out, "failures", name + (hung ? "-HANG" : overMemory ? "-MEMORY" : "") + ".log"),
+            $"seed={seed} iterations={opt.Iterations} propertyTests={opt.PropertyTests} hung={hung} overMemory={overMemory}\n{text}");
+        Log($"{(hung ? "HANG" : overMemory ? "MEMORY" : "FAIL")} round seed={seed} (log kept in failures/)");
     }
     else
     {
@@ -131,21 +144,55 @@ void RunRound(long seed, int worker)
     }
 }
 
-void TrackMemory(Process p)
+// Memory of this round's biggest process under the round's process tree. It must never throw: the machine being short of memory
+// is exactly when this runs, and an exception here once took the whole soak down.
+long TrackMemory(Process p)
 {
+    long bytes = 0;
     try
     {
         p.Refresh();
-        long bytes = p.WorkingSet64;
+        bytes = p.WorkingSet64;
         foreach (var child in Process.GetProcessesByName("testhost"))
         {
-            try { bytes = Math.Max(bytes, child.WorkingSet64); } catch (InvalidOperationException) { }
+            try { bytes = Math.Max(bytes, child.WorkingSet64); } catch (Exception) { }
             finally { child.Dispose(); }
         }
         lock (gate) peakMemory = Math.Max(peakMemory, bytes);
     }
-    catch (InvalidOperationException)
+    catch (Exception)
     {
+    }
+    return bytes;
+}
+
+// True when the machine is short of memory or the output drive is short of disk. Never throws.
+bool LowOnResources(out string why)
+{
+    why = "";
+    try
+    {
+        var info = GC.GetGCMemoryInfo();
+        double freeGb = (info.TotalAvailableMemoryBytes - info.MemoryLoadBytes) / 1073741824.0;
+        if (freeGb < opt.MinFreeGb) { why = $"only {freeGb:F1} GB of memory free"; return true; }
+        double diskGb = new DriveInfo(Path.GetPathRoot(opt.Out)!).AvailableFreeSpace / 1073741824.0;
+        if (diskGb < opt.MinDiskGb) { why = $"only {diskGb:F1} GB of disk free"; return true; }
+    }
+    catch (Exception)
+    {
+    }
+    return false;
+}
+
+// Block a new round until the machine has room; gives up (and stops the soak) after an hour.
+void WaitForRoom()
+{
+    var waited = Stopwatch.StartNew();
+    while (LowOnResources(out var why))
+    {
+        if (waited.Elapsed.TotalSeconds < 1) Log($"waiting for room: {why}");
+        if (waited.Elapsed > TimeSpan.FromHours(1)) { Log("no room after an hour; stopping"); cts.Cancel(); return; }
+        Thread.Sleep(TimeSpan.FromSeconds(30));
     }
 }
 
@@ -168,7 +215,7 @@ sealed class State
 
 /// <summary>Command-line options.</summary>
 sealed record Options(string Tests, string Out, TimeSpan? StartAt, double Hours, int Workers, int Iterations,
-    int PropertyTests, double RoundMinutes, bool Resume)
+    int PropertyTests, double RoundMinutes, bool Resume, double ChildGb, double MinFreeGb, double MinDiskGb)
 {
     public static Options Parse(string[] args)
     {
@@ -180,7 +227,7 @@ sealed record Options(string Tests, string Out, TimeSpan? StartAt, double Hours,
         string tests = Get("tests", "");
         if (tests.Length == 0 || !File.Exists(tests))
         {
-            Console.Error.WriteLine("usage: Soak --tests <path to Starlark.Fuzz.Tests.dll> [--out dir] [--start-at HH:mm] [--hours 10] [--workers 4] [--iterations 200000] [--property-tests 5000] [--round-minutes 30] [--resume]");
+            Console.Error.WriteLine("usage: Soak --tests <path to Starlark.Fuzz.Tests.dll> [--out dir] [--start-at HH:mm] [--hours 10] [--workers 4] [--iterations 200000] [--property-tests 5000] [--round-minutes 30] [--resume] [--child-gb 3] [--min-free-gb 4] [--min-disk-gb 10]");
             Environment.Exit(2);
         }
         string startAt = Get("start-at", "");
@@ -193,6 +240,9 @@ sealed record Options(string Tests, string Out, TimeSpan? StartAt, double Hours,
             int.Parse(Get("iterations", "200000")),
             int.Parse(Get("property-tests", "5000")),
             double.Parse(Get("round-minutes", "30")),
-            args.Contains("--resume"));
+            args.Contains("--resume"),
+            double.Parse(Get("child-gb", "3")),
+            double.Parse(Get("min-free-gb", "4")),
+            double.Parse(Get("min-disk-gb", "10")));
     }
 }
