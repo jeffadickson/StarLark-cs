@@ -609,8 +609,31 @@ public sealed class Lexer
     private bool AtFStringExprTopLevel =>
         _fstrings.Count > 0 && _fstrings[^1] is { BraceDepth: 1, ParenDepth: 0, BracketDepth: 0 };
 
-    /// <summary>The next lexeme, or null at the end of input.</summary>
+    private int _furthest = -1;
+    private int _stalled;
+
+    /// <summary>
+    /// The next lexeme, or null at the end of input. Lexing must always move forward: more lexemes than the input has
+    /// characters, in a row, without reaching a new position can only be a lexer bug (an error returned without consuming
+    /// input), so it is reported at once instead of looping and allocating forever.
+    /// </summary>
     public Lexeme? Next()
+    {
+        var next = NextCore();
+        if (next is not { } lexeme) return null;
+        if (lexeme.End > _furthest)
+        {
+            _furthest = lexeme.End;
+            _stalled = 0;
+        }
+        else if (++_stalled > _codemap.Source.Length + 64)
+        {
+            throw new InvalidOperationException($"lexer made no progress past offset {_furthest} (internal error)");
+        }
+        return lexeme;
+    }
+
+    private Lexeme? NextCore()
     {
         while (true)
         {
