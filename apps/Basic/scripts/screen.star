@@ -1,0 +1,315 @@
+# The TRS-80 screen: 16 rows of 64 characters, and 128 x 48 block graphics.
+#
+# The screen is a list of 1024 character codes, the same as the video memory the real machine had at addresses 15360 to
+# 16383, so PRINT @, POKE, PEEK, SET, RESET and POINT all work on one store. Codes 32 to 127 are text, and 128 to 191 are
+# graphics cells of 2 x 3 blocks (code 128 plus one bit per block).
+#
+# Everything printed is also appended to a plain text stream (st["out"]) so a terminal host can show it as it comes, and
+# the tests can read it without caring about the screen.
+
+load("numbers.star", "floor_int", "to_float", "kind_of", "overflows")
+
+COLUMNS = 64
+ROWS = 16
+CELLS = 1024
+VIDEO_BASE = 15360
+
+CODES = {"%c" % i: i for i in range(256)}
+
+def _make_sextants():
+    table = []
+    for pattern in range(64):
+        if pattern == 0:
+            table.append(" ")
+        elif pattern == 21:
+            table.append("%c" % 0x258C)
+        elif pattern == 42:
+            table.append("%c" % 0x2590)
+        elif pattern == 63:
+            table.append("%c" % 0x2588)
+        else:
+            skip = 0
+            if pattern > 21:
+                skip += 1
+            if pattern > 42:
+                skip += 1
+            table.append("%c" % (0x1FB00 + pattern - 1 - skip))
+    return table
+
+SEXTANTS = _make_sextants()
+
+def new_screen():
+    return [32] * CELLS
+
+def _scroll(st):
+    st["screen"] = st["screen"][COLUMNS:] + [32] * COLUMNS
+    st["cur"] = CELLS - COLUMNS
+
+def newline(st):
+    cur = (st["cur"] // COLUMNS + 1) * COLUMNS
+    st["cur"] = cur
+    if cur >= CELLS:
+        _scroll(st)
+    st["col"] = st["cur"] % COLUMNS
+
+# Write text at the cursor. Newlines move to the start of the next line, and a line that reaches column 64 wraps.
+def put_text(st, s):
+    if not st["quiet"]:
+        st["out"].append(s)
+    screen = st["screen"]
+    for ch in s.elems():
+        if ch == "\n" or ch == "\r":
+            newline(st)
+            screen = st["screen"]
+            continue
+        screen[st["cur"]] = CODES.get(ch, 63)
+        st["cur"] += 1
+        if st["cur"] >= CELLS:
+            _scroll(st)
+            screen = st["screen"]
+        st["col"] = st["cur"] % COLUMNS
+
+def clear_screen(st):
+    st["screen"] = new_screen()
+    st["cur"] = 0
+    st["col"] = 0
+    st["out"].append("\f")
+
+def set_cursor(st, pos):
+    st["cur"] = pos
+    st["col"] = pos % COLUMNS
+
+# ---------------------------------------------------------------- graphics
+
+def _cell_and_bit(x, y):
+    return ((y // 3) * COLUMNS + x // 2, 1 << ((y % 3) * 2 + x % 2))
+
+def set_pixel(st, x, y, on):
+    c = _cell_and_bit(x, y)
+    code = st["screen"][c[0]]
+    if code < 128 or code > 191:
+        code = 128
+    if on:
+        code = code | c[1]
+    else:
+        code = code & (255 - c[1])
+        if code < 128:
+            code = 128
+    st["screen"][c[0]] = code
+
+def point_on(st, x, y):
+    c = _cell_and_bit(x, y)
+    code = st["screen"][c[0]]
+    return code >= 128 and code <= 191 and (code & c[1]) != 0
+
+# ---------------------------------------------------------------- showing the screen
+
+def _glyph(code):
+    if code >= 32 and code < 128:
+        return "%c" % code
+    if code >= 128 and code < 192:
+        return SEXTANTS[code - 128]
+    return " "
+
+# The 16 lines of the screen as text, with trailing spaces removed.
+def screen_lines(st):
+    screen = st["screen"]
+    lines = []
+    for r in range(ROWS):
+        row = screen[r * COLUMNS:(r + 1) * COLUMNS]
+        lines.append("".join([_glyph(c) for c in row]).rstrip(" "))
+    return lines
+
+# ---------------------------------------------------------------- PRINT USING
+
+def _count(s, i, ch):
+    j = i
+    for k in range(i, len(s)):
+        if s[k] != ch:
+            break
+        j = k + 1
+    return j - i
+
+# Cut a format string into literal text, numeric fields and string fields.
+# A numeric field is ("num", dict), a string field is ("str", width) with width 0 meaning "the whole string" and -1 the
+# first character only.
+def parse_using(fmt):
+    segs = []
+    lit = ""
+    n = len(fmt)
+    i = 0
+    for _ in range(n + 1):
+        if i >= n:
+            break
+        c = fmt[i]
+        if c == "_" and i + 1 < n:
+            lit += fmt[i + 1]
+            i += 2
+        elif c == "!":
+            if lit != "":
+                segs.append(("lit", lit))
+                lit = ""
+            segs.append(("str", -1))
+            i += 1
+        elif c == "&":
+            if lit != "":
+                segs.append(("lit", lit))
+                lit = ""
+            segs.append(("str", 0))
+            i += 1
+        elif c == "\\":
+            j = fmt.find("\\", i + 1)
+            if j < 0:
+                lit += c
+                i += 1
+            else:
+                if lit != "":
+                    segs.append(("lit", lit))
+                    lit = ""
+                segs.append(("str", j - i + 1))
+                i = j + 1
+        elif c == "#" or c == "." or c == "+" or c == "*" or c == "$" or (c == "-" and False):
+            spec = {"lead_plus": False, "stars": False, "dollar": False, "int": 0, "frac": 0, "dot": False,
+                    "commas": False, "trail": "", "exp": False, "width": 0}
+            j = i
+            if fmt[j] == "+":
+                spec["lead_plus"] = True
+                j += 1
+            if fmt.startswith("**", j):
+                spec["stars"] = True
+                spec["int"] += 2
+                j += 2
+            if fmt.startswith("$$", j):
+                spec["dollar"] = True
+                spec["int"] += 1
+                j += 2
+            for _ in range(n + 1):
+                if j >= n:
+                    break
+                d = fmt[j]
+                if d == "#":
+                    spec["int"] += 1
+                    j += 1
+                elif d == "," and not spec["dot"]:
+                    spec["commas"] = True
+                    j += 1
+                else:
+                    break
+            if j < n and fmt[j] == "." and (j + 1 < n and fmt[j + 1] == "#" or spec["int"] > 0):
+                spec["dot"] = True
+                j += 1
+                k = _count(fmt, j, "#")
+                spec["frac"] = k
+                j += k
+            if fmt.startswith("^^^^", j):
+                spec["exp"] = True
+                j += 4
+            if j < n and (fmt[j] == "-" or fmt[j] == "+") and not spec["lead_plus"]:
+                spec["trail"] = fmt[j]
+                j += 1
+            if spec["int"] + spec["frac"] == 0:
+                lit += fmt[i:j] if j > i else c
+                i = max(j, i + 1)
+            else:
+                if lit != "":
+                    segs.append(("lit", lit))
+                    lit = ""
+                spec["width"] = j - i
+                segs.append(("num", spec))
+                i = j
+        else:
+            lit += c
+            i += 1
+    if lit != "":
+        segs.append(("lit", lit))
+    return segs
+
+def _with_commas(digits):
+    out = ""
+    n = len(digits)
+    for k in range(n):
+        if k > 0 and (n - k) % 3 == 0:
+            out += ","
+        out += digits[k]
+    return out
+
+# Format x in a numeric field.
+def format_field(x, spec):
+    neg = x < 0.0
+    a = -x if neg else x
+    if spec["exp"]:
+        body = ("%." + str(spec["frac"] + spec["int"] - 1 if spec["int"] > 0 else spec["frac"]) + "e") % a
+        parts = body.split("e")
+        mant = parts[0]
+        ev = int(parts[1])
+        text = mant + "E" + ("-" if ev < 0 else "+") + ("%02d" % abs(ev))
+    else:
+        text = ("%." + str(spec["frac"]) + "f") % a
+        if spec["commas"]:
+            ip = text.split(".")
+            text = _with_commas(ip[0]) + (("." + ip[1]) if len(ip) > 1 else "")
+        if spec["dot"] and spec["frac"] == 0:
+            text += "."
+    if spec["dollar"]:
+        text = "$" + text
+    sign = ""
+    if neg:
+        sign = "-"
+    elif spec["lead_plus"]:
+        sign = "+"
+    if spec["trail"] != "":
+        tail = ""
+        if neg:
+            tail = "-"
+        elif spec["trail"] == "+":
+            tail = "+"
+        else:
+            tail = " "
+        full = text + tail
+    else:
+        full = sign + text
+    if len(full) > spec["width"]:
+        return "%" + full
+    fill = "*" if spec["stars"] else " "
+    return fill * (spec["width"] - len(full)) + full
+
+# Format values by a PRINT USING format string. Returns (text, error).
+def format_using(fmt, values):
+    segs = parse_using(fmt)
+    fields = 0
+    for s in segs:
+        if s[0] != "lit":
+            fields += 1
+    if fields == 0:
+        return ("", "FC")
+    out = ""
+    vi = 0
+    n = len(values)
+    for _ in range(n * len(segs) + len(segs) + 2):
+        done = False
+        for s in segs:
+            if s[0] == "lit":
+                out += s[1]
+            else:
+                if vi >= n:
+                    done = True
+                    break
+                v = values[vi]
+                vi += 1
+                if s[0] == "num":
+                    if kind_of(v) == 3:
+                        return ("", "TM")
+                    out += format_field(to_float(v), s[1])
+                else:
+                    if kind_of(v) != 3:
+                        return ("", "TM")
+                    w = s[1]
+                    if w == 0:
+                        out += v
+                    elif w == -1:
+                        out += v[:1] if v != "" else " "
+                    else:
+                        out += (v + " " * w)[:w]
+        if done or vi >= n:
+            break
+    return (out, "")

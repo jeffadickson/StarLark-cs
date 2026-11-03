@@ -259,6 +259,21 @@ public static partial class StringFormat
         return Pad(sign + prefix, body, width, left, zero, fill, align);
     }
 
+    /// <summary>
+    /// <c>d.ddde+xx</c> with <paramref name="digits"/> digits after the point and at least two exponent digits. Uses the standard
+    /// "E" format, which is exact for any precision; a custom format string such as <c>0.000e+00</c> silently rounds to 15 significant
+    /// digits, which made <c>"%.15e" % (1.0/3)</c> end in a spurious zero.
+    /// </summary>
+    private static string Scientific(double abs, int digits, bool trim)
+    {
+        string s = abs.ToString("E" + digits, Inv);
+        int e = s.IndexOf('E');
+        string mantissa = s[..e];
+        int exponent = int.Parse(s[(e + 1)..], Inv);
+        if (trim && mantissa.Contains('.')) mantissa = mantissa.TrimEnd('0').TrimEnd('.');
+        return mantissa + "e" + (exponent < 0 ? "-" : "+") + Math.Abs(exponent).ToString("00", Inv);
+    }
+
     private static string FloatBody(double abs, char type, int? prec, bool alt)
     {
         switch (type)
@@ -266,10 +281,7 @@ public static partial class StringFormat
             case 'f': case 'F': return abs.ToString("F" + (prec ?? 6), Inv);
             case '%': return (abs * 100).ToString("F" + (prec ?? 6), Inv) + "%";
             case 'e': case 'E':
-            {
-                string s = abs.ToString((prec ?? 6) == 0 ? "0e+00" : "0." + new string('0', prec ?? 6) + "e+00", Inv);
-                return s;
-            }
+                return Scientific(abs, prec ?? 6, trim: false);
             case 'g': case 'G':
             {
                 int p = prec is null ? 6 : Math.Max(1, prec.Value);
@@ -278,7 +290,7 @@ public static partial class StringFormat
                 string text;
                 if (exp < -4 || exp >= p)
                 {
-                    text = abs.ToString("0." + new string(alt ? '0' : '#', Math.Max(0, p - 1)) + "e+00", Inv);
+                    text = Scientific(abs, Math.Max(0, p - 1), trim: !alt);
                 }
                 else
                 {

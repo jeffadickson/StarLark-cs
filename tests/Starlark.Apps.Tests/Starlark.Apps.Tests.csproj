@@ -20,6 +20,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Starlark.Eval\Starlark.Eval.csproj" />
     <ProjectReference Include="..\..\apps\Adventure\Adventure.csproj" />
+    <ProjectReference Include="..\..\apps\Basic\Basic.csproj" />
     <ProjectReference Include="..\..\apps\Mandelbrot\Mandelbrot.csproj" />
     <ProjectReference Include="..\..\apps\ParallelBuilds\ParallelBuilds.csproj" />
     <ProjectReference Include="..\..\apps\RayTracer\RayTracer.csproj" />
