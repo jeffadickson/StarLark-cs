@@ -90,6 +90,45 @@ public class AppTests
         Assert.Equal(Play("look", "take lamp", "east"), Play("look", "take lamp", "east"));
     }
 
+    [Fact]
+    public void ParallelBuildsOverlapTheWaitingAndRespectTheCap()
+    {
+        var sw = new StringWriter();
+        var outcomes = ParallelBuilds.Program.Run(sw, 0.2);   // builds take a fifth of their demo time
+        var o = sw.ToString();
+        Assert.Equal(["serial", "parallel", "good_release", "broken_release", "many"], outcomes.Select(x => x.Name).ToArray());
+
+        // Serial: one build in flight at a time. Parallel: all three at once.
+        Assert.Equal(1, outcomes[0].PeakHostOperations);
+        Assert.Equal(3, outcomes[1].PeakHostOperations);
+        // The three builds take 0.14 + 0.22 + 0.10 = 0.46 s one after another, but only the longest (0.22 s) side by side.
+        Assert.True(outcomes[0].Seconds > outcomes[1].Seconds * 1.4, $"serial {outcomes[0].Seconds:F2}s vs parallel {outcomes[1].Seconds:F2}s");
+
+        // The release packages after the three builds (four builds started), and a broken build blocks it (three started).
+        Assert.Equal(4, outcomes[2].HostCalls);
+        Assert.Contains("release ready", o);
+        Assert.Equal(3, outcomes[3].HostCalls);
+        Assert.Contains("release blocked: web failed", o);
+        Assert.Contains("error: cannot find symbol Widget", o);
+
+        // Twelve builds, never more than the cap of four in flight.
+        Assert.Equal(12, outcomes[4].HostCalls);
+        Assert.Equal(4, outcomes[4].PeakHostOperations);
+    }
+
+    [Fact]
+    public void ParallelBuildsStartingMoreThanTheCapStopsTheRun()
+    {
+        var it = new Starlark.Eval.Interpreter
+        {
+            Dialect = Starlark.Syntax.Dialect.Standard with { EnableTopLevelStmt = true, EnableFutures = true },
+            FutureLimits = new Starlark.Eval.Futures.FutureLimits { MaxHostOperations = 2 },
+        };
+        it.Register("build", async (int n) => { await Task.Delay(50); return n; }, threadSafe: true, asFuture: true);
+        var e = Assert.Throws<Starlark.Eval.ExecutionLimitException>(() => it.Execute("t", "fs = [build(i) for i in range(3)]\nr = all_of(fs)\n"));
+        Assert.Equal("host-operations", e.Limit);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

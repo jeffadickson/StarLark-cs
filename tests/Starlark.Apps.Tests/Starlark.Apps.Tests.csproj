@@ -21,6 +21,7 @@
     <ProjectReference Include="..\..\src\Starlark.Eval\Starlark.Eval.csproj" />
     <ProjectReference Include="..\..\apps\Adventure\Adventure.csproj" />
     <ProjectReference Include="..\..\apps\Mandelbrot\Mandelbrot.csproj" />
+    <ProjectReference Include="..\..\apps\ParallelBuilds\ParallelBuilds.csproj" />
     <ProjectReference Include="..\..\apps\RayTracer\RayTracer.csproj" />
     <ProjectReference Include="..\..\apps\BuildRules\BuildRules.csproj" />
     <ProjectReference Include="..\..\apps\PolicyEngine\PolicyEngine.csproj" />
