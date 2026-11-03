@@ -15,6 +15,7 @@
     <Project Path="apps/ConfigInspector/ConfigInspector.csproj" />
     <Project Path="apps/GameAI/GameAI.csproj" />
     <Project Path="apps/PolicyEngine/PolicyEngine.csproj" />
+    <Project Path="apps/Mandelbrot/Mandelbrot.csproj" />
     <Project Path="apps/RayTracer/RayTracer.csproj" />
     <Project Path="apps/ReportPipeline/ReportPipeline.csproj" />
   </Folder>

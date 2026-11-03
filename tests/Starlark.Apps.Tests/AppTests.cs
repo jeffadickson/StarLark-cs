@@ -90,6 +90,35 @@ public class AppTests
         Assert.Equal(Play("look", "take lamp", "east"), Play("look", "take lamp", "east"));
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void MandelbrotPictureDoesNotDependOnTheNumberOfWorkers(bool colour)
+    {
+        var sw = new StringWriter();
+        var view = Mandelbrot.View.All[0];
+        Assert.Equal(0, Mandelbrot.Program.Run(sw, (30, 10), view, colour, [1, 3, 8]));
+        var o = sw.ToString();
+        Assert.Contains("Every worker count produced exactly the same picture.", o);
+        Assert.DoesNotContain("MISMATCH", o);
+        // True colour output uses the 24-bit escape sequences and half-block characters; plain output uses neither.
+        Assert.Equal(colour, o.Contains("\u001b[38;2;"));
+        Assert.Equal(colour, o.Contains('▀'));
+    }
+
+    [Fact]
+    public void MandelbrotShowsTheSetAndItsSurroundings()
+    {
+        var sw = new StringWriter();
+        Mandelbrot.Program.Run(sw, (60, 22), Mandelbrot.View.All[0], false, [2]);
+        var o = sw.ToString();
+        Assert.Contains("@", o);   // inside the set
+        Assert.Contains(",", o);   // far outside
+        // The set is symmetric about the real axis, so the picture is too (a row and its mirror agree).
+        var rows = o.Split('\n').Skip(2).Take(22).Select(r => r.TrimEnd('\r')).ToArray();
+        Assert.Equal(rows[0], rows[^1]);
+    }
+
     [Fact]
     public void RayTracerPictureDoesNotDependOnTheNumberOfWorkers()
     {
