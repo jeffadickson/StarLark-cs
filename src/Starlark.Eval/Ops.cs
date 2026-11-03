@@ -81,6 +81,7 @@ public static class Ops
             case (StarDict x, StarDict y):
                 if (ReferenceEquals(x, y)) return true;
                 if (x.Count != y.Count) return false;
+                StackGuard.Check();
                 foreach (var kv in x.Entries)
                 {
                     if (!y.TryGet(kv.Key, out var yv) || !Equal(kv.Value, yv)) return false;
@@ -88,6 +89,7 @@ public static class Ops
                 return true;
             case (StarStruct x, StarStruct y):
                 // Equal when they have the same fields with equal values; field order does not matter.
+                StackGuard.Check();
                 return x.Fields.Count == y.Fields.Count &&
                        x.Fields.All(kv => y.TryGet(kv.Key, out var yv) && Equal(kv.Value, yv));
             case (StarRecord x, StarRecord y):
@@ -105,6 +107,7 @@ public static class Ops
 
     private static bool SeqEqual(IReadOnlyList<object?> a, IReadOnlyList<object?> b)
     {
+        StackGuard.Check();
         if (a.Count != b.Count) return false;
         for (int i = 0; i < a.Count; i++)
         {
@@ -150,6 +153,7 @@ public static class Ops
 
     private static int SeqCompare(IReadOnlyList<object?> a, IReadOnlyList<object?> b, string op)
     {
+        StackGuard.Check();
         for (int i = 0; i < Math.Min(a.Count, b.Count); i++)
         {
             if (Equal(a[i], b[i])) continue;

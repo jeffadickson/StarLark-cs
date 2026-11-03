@@ -360,6 +360,7 @@ public static class Freezer
 {
     public static void Freeze(object? v)
     {
+        if (v is Mutable or StarTuple) StackGuard.Check();
         switch (v)
         {
             case Mutable m:
@@ -434,6 +435,7 @@ public static class Hashing
 {
     public static void CheckHashable(object? v)
     {
+        if (v is StarTuple or StarList) StackGuard.Check();
         switch (v)
         {
             case StarList { Frozen: false } or StarDict { Frozen: false } or StarSet { Frozen: false }:
@@ -472,6 +474,7 @@ public static class Hashing
 
     public static int Hash(object? v)
     {
+        if (v is StarTuple or StarList or StarDict or StarSet) StackGuard.Check();
         switch (v)
         {
             case IHostValue h: return h.HashValue();
@@ -615,31 +618,124 @@ public static class Repr
         return sb.Append('"').ToString();
     }
 
-    public static string Of(object? v) => v switch
+    public static string Of(object? v) => Of(v, null);
+
+    /// <summary>
+    /// The repr of <paramref name="v"/>. <paramref name="active"/> holds the lists, dicts and sets being printed right now, so a
+    /// container that contains itself prints as <c>[...]</c>, <c>{...}</c> or <c>set([...])</c> instead of recursing forever,
+    /// and <see cref="StackGuard"/> turns absurdly deep nesting into an error. The container cases are separate methods so
+    /// this one allocates nothing for the common scalar case.
+    /// </summary>
+    private static string Of(object? v, HashSet<object>? active)
     {
-        IHostValue h => h.Repr(),
-        null => "None",
-        bool b => b ? "True" : "False",
-        BigInteger i => i.ToString(),
-        double d => FloatToString(d),
-        string s => Quote(s),
-        StarUtf16 u => "utf16(" + Quote(u.Value) + ")",
-        StarBytes b => new BytesLiteral(b.Value, default).ToString(),
-        StarList l => "[" + string.Join(", ", l.Items.Select(Of)) + "]",
-        StarTuple t => t.Items.Length == 1 ? $"({Of(t.Items[0])},)" : "(" + string.Join(", ", t.Items.Select(Of)) + ")",
-        StarDict d => "{" + string.Join(", ", d.Entries.Select(kv => $"{Of(kv.Key)}: {Of(kv.Value)}")) + "}",
-        StarSet s => s.Count == 0 ? "set()" : "set([" + string.Join(", ", s.Items.Select(Of)) + "])",
-        StarRange r => r.Step.IsOne ? $"range({r.Start}, {r.Stop})" : $"range({r.Start}, {r.Stop}, {r.Step})",
-        StarElems e => e.Source is string s2 ? $"{Quote(s2)}.elems()" : $"{Of(e.Source)}.elems()",
-        TypeValue t => t.Ty.ToString(),
-        StarRecordType rt => $"<record type>",
-        StarEnumType et => $"enum({string.Join(", ", et.Values.Select(Of))})",
-        BoundMethod m => $"<built-in method {m.Name} of {Types.Name(m.Receiver)} value>",
-        Builtin f => $"<built-in function {f.Name}>",
-        ICallable f => $"<function {f.Name}>",
-        StarStruct st => "struct(" + string.Join(", ", st.Fields.Select(kv => $"{kv.Key} = {Of(kv.Value)}")) + ")",
-        StarRecord rec => rec.Type.Name + "(" + string.Join(", ", rec.Type.Fields.Select((fld, i) => $"{fld.Name}={Of(rec.Values[i])}")) + ")",
-        StarEnumValue ev => ev.Type.Name + "(" + Of(ev.Value) + ")",
-        _ => v.ToString() ?? "",
-    };
+        StackGuard.Check();
+        return v switch
+        {
+            IHostValue h => h.Repr(),
+            null => "None",
+            bool b => b ? "True" : "False",
+            BigInteger i => i.ToString(),
+            double d => FloatToString(d),
+            string s => Quote(s),
+            StarUtf16 u => "utf16(" + Quote(u.Value) + ")",
+            StarBytes b => new BytesLiteral(b.Value, default).ToString(),
+            StarList l => OfList(l, active),
+            StarTuple t => OfTuple(t, active),
+            StarDict d => OfDict(d, active),
+            StarSet s => OfSet(s, active),
+            StarRange r => r.Step.IsOne ? $"range({r.Start}, {r.Stop})" : $"range({r.Start}, {r.Stop}, {r.Step})",
+            StarElems e => e.Source is string s2 ? $"{Quote(s2)}.elems()" : $"{Of(e.Source, active)}.elems()",
+            TypeValue t => t.Ty.ToString(),
+            StarRecordType rt => $"<record type>",
+            StarEnumType et => "enum(" + Join(et.Values, active) + ")",
+            BoundMethod m => $"<built-in method {m.Name} of {Types.Name(m.Receiver)} value>",
+            Builtin f => $"<built-in function {f.Name}>",
+            ICallable f => $"<function {f.Name}>",
+            StarStruct st => OfStruct(st, active),
+            StarRecord rec => OfRecord(rec, active),
+            StarEnumValue ev => ev.Type.Name + "(" + Of(ev.Value, active) + ")",
+            _ => v.ToString() ?? "",
+        };
+    }
+
+    private static HashSet<object> NewActive() => new(ReferenceEqualityComparer.Instance);
+
+    private static string Join(IEnumerable<object?> items, HashSet<object>? active)
+    {
+        var sb = new StringBuilder();
+        bool first = true;
+        foreach (var x in items)
+        {
+            if (!first) sb.Append(", ");
+            first = false;
+            sb.Append(Of(x, active));
+        }
+        return sb.ToString();
+    }
+
+    private static string OfList(StarList l, HashSet<object>? active)
+    {
+        active ??= NewActive();
+        if (!active.Add(l)) return "[...]";
+        try { return "[" + Join(l.Items, active) + "]"; }
+        finally { active.Remove(l); }
+    }
+
+    // A tuple is immutable, so a cycle can only run through a list, dict or set inside it; those are tracked.
+    private static string OfTuple(StarTuple t, HashSet<object>? active) =>
+        t.Items.Length == 1 ? "(" + Of(t.Items[0], active) + ",)" : "(" + Join(t.Items, active) + ")";
+
+    private static string OfDict(StarDict d, HashSet<object>? active)
+    {
+        active ??= NewActive();
+        if (!active.Add(d)) return "{...}";
+        try
+        {
+            var sb = new StringBuilder("{");
+            bool first = true;
+            foreach (var kv in d.Entries)
+            {
+                if (!first) sb.Append(", ");
+                first = false;
+                sb.Append(Of(kv.Key, active)).Append(": ").Append(Of(kv.Value, active));
+            }
+            return sb.Append('}').ToString();
+        }
+        finally { active.Remove(d); }
+    }
+
+    private static string OfSet(StarSet s, HashSet<object>? active)
+    {
+        if (s.Count == 0) return "set()";
+        active ??= NewActive();
+        if (!active.Add(s)) return "set([...])";
+        try { return "set([" + Join(s.Items, active) + "])"; }
+        finally { active.Remove(s); }
+    }
+
+    private static string OfStruct(StarStruct st, HashSet<object>? active)
+    {
+        var sb = new StringBuilder("struct(");
+        bool first = true;
+        foreach (var kv in st.Fields)
+        {
+            if (!first) sb.Append(", ");
+            first = false;
+            sb.Append(kv.Key).Append(" = ").Append(Of(kv.Value, active));
+        }
+        return sb.Append(')').ToString();
+    }
+
+    private static string OfRecord(StarRecord rec, HashSet<object>? active)
+    {
+        var sb = new StringBuilder(rec.Type.Name).Append('(');
+        int i = 0;
+        foreach (var fld in rec.Type.Fields)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append(fld.Name).Append('=').Append(Of(rec.Values[i], active));
+            i++;
+        }
+        return sb.Append(')').ToString();
+    }
 }
