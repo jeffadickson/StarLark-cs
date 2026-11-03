@@ -39,6 +39,7 @@ var deadline = DateTime.Now.AddHours(opt.Hours) - TimeSpan.FromSeconds(state.Ela
 Log($"soak started; deadline {deadline:yyyy-MM-dd HH:mm}; {opt.Workers} worker(s); out={opt.Out}");
 
 var gate = new object();
+int faultStreak = 0;   // consecutive rounds that died instantly with no output; see RunRound
 long nextSeed = state.NextSeed;
 var peakMemory = 0L;
 var cts = new CancellationTokenSource();
@@ -120,7 +121,27 @@ void RunRound(long seed, int worker)
     p.WaitForExit();
     string text;
     lock (log) text = log.ToString();
-    bool failed = !hung && (overMemory || p.ExitCode != 0);
+    int exitCode = p.ExitCode;
+    bool failed = !hung && (overMemory || exitCode != 0);
+
+    // A round that dies at once with no output at all did not test anything: the machine or the test host broke under it
+    // (the process was killed, the SDK was updated, ...). That is an environment fault, not a failure of the code under
+    // test, and it must not be counted as one or burn through seeds. Several in a row stop the soak with a clear message.
+    bool environmentFault = failed && !overMemory && text.Trim().Length == 0 && DateTime.Now - started < TimeSpan.FromSeconds(10);
+    if (environmentFault)
+    {
+        int streak = Interlocked.Increment(ref faultStreak);
+        Log($"ENVIRONMENT FAULT round seed={seed}: exit code {exitCode} after {(DateTime.Now - started).TotalSeconds:F1}s with no output ({streak} in a row)");
+        if (streak >= 5)
+        {
+            Log("five rounds in a row died instantly with no output; stopping. Fix the environment, then restart with --resume.");
+            cts.Cancel();
+        }
+        lock (gate) { nextSeed = Math.Min(nextSeed, seed); }   // the seed block was never tested, so hand it out again
+        Thread.Sleep(TimeSpan.FromSeconds(10));
+        return;
+    }
+    Interlocked.Exchange(ref faultStreak, 0);
 
     lock (gate)
     {
@@ -135,7 +156,7 @@ void RunRound(long seed, int worker)
     if (hung || failed)
     {
         File.WriteAllText(Path.Combine(opt.Out, "failures", name + (hung ? "-HANG" : overMemory ? "-MEMORY" : "") + ".log"),
-            $"seed={seed} iterations={opt.Iterations} propertyTests={opt.PropertyTests} hung={hung} overMemory={overMemory}\n{text}");
+            $"seed={seed} iterations={opt.Iterations} propertyTests={opt.PropertyTests} hung={hung} overMemory={overMemory} exitCode={exitCode}\n{text}");
         Log($"{(hung ? "HANG" : overMemory ? "MEMORY" : "FAIL")} round seed={seed} (log kept in failures/)");
     }
     else
