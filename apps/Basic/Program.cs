@@ -24,6 +24,9 @@ public sealed class Machine
         _interpreter = new Interpreter
         {
             Dialect = Dialect.Standard with { EnableTopLevelStmt = true },
+            // BASIC counts characters, not bytes: LEFT$("héllo", 2) is "hé", and MID$ or ASC must never land inside a character. The
+            // library's default string element is the UTF-8 byte, where such a cut is an error, so this machine asks for UTF-16 units.
+            StringElements = StringElements.Utf16,
             MaxSteps = maxSteps,
             Timeout = TimeSpan.FromMinutes(2),
             MaxAllocatedBytes = 512L * 1024 * 1024,
@@ -56,6 +59,9 @@ public sealed class Machine
 
     /// <summary>The 16 lines of the 64-column screen, with trailing spaces removed.</summary>
     public IReadOnlyList<string> Screen() => ((StarList)Call("get_screen", _state)!).Items.Select(x => (string)x!).ToList();
+
+    /// <summary>Puts the machine back at the READY prompt after a fault in the interpreter script, keeping the program in memory.</summary>
+    public string Recover() => (string)Call("recover", _state)!;
 
     /// <summary>
     /// Whether typed lines are echoed into the output. On by default, which suits tests and pipes; a real terminal echoes by itself,
@@ -112,6 +118,8 @@ public static class Program
         {
             source = File.ReadAllText(args[0]);
         }
+        // Both directions: without InputEncoding, Windows decodes what is typed in the console's OEM code page and "é" arrives as "├⌐".
+        Console.InputEncoding = System.Text.Encoding.UTF8;
         Console.OutputEncoding = System.Text.Encoding.UTF8;
         // On a terminal the user sees what they type, so the machine must not echo it again; Ctrl+C is BREAK.
         return Run(Console.Out, Console.In, source, interactive: !Console.IsInputRedirected);
@@ -160,7 +168,17 @@ public static class Program
                 var line = input.ReadLine();
                 if (line is null) break;
                 Interlocked.Exchange(ref breakRequested, 0);
-                status = Drive(machine.Type(line));
+                try
+                {
+                    status = Drive(machine.Type(line));
+                }
+                catch (StarlarkException e)
+                {
+                    // A fault in the interpreter script must not end the session, whatever was typed: say so and return to READY.
+                    output.Write(machine.TakeOutput());
+                    output.WriteLine($"?INTERNAL ERROR: {e.RawMessage}");
+                    status = machine.Recover();
+                }
                 output.Write(machine.TakeOutput());
                 output.Flush();
             }

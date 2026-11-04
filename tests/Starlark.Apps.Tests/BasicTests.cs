@@ -492,3 +492,86 @@ public class BasicTests
         Assert.Equal(RunProgram(program, "50"), RunProgram(program, "50"));
     }
 }
+
+/// <summary>
+/// Typing non-ASCII text must never end the session. The library's default string element is the UTF-8 byte, where cutting a
+/// character in half is an error; the BASIC machine counts characters (UTF-16 units), so LEFT$, MID$ and ASC are always whole.
+/// </summary>
+public class BasicNonAsciiTests
+{
+    private static string Print(string expression)
+    {
+        var m = new Basic.Machine();
+        m.TakeOutput();
+        m.Enter("PRINT " + expression);
+        return m.TakeOutput().Replace("\r", "").Split('\n')[1];
+    }
+
+    [Theory]
+    [InlineData("LEFT$(\"héllo\",2)", "hé")]
+    [InlineData("RIGHT$(\"héllo\",2)", "lo")]
+    [InlineData("MID$(\"héllo\",2,1)", "é")]
+    [InlineData("ASC(\"é\")", " 233 ")]
+    [InlineData("LEN(\"héllo\")", " 5 ")]
+    [InlineData("LEN(\"世界\")", " 2 ")]
+    [InlineData("CHR$(233)", "é")]
+    [InlineData("STRING$(2,\"é\")", "éé")]
+    [InlineData("INSTR(\"héllo\",\"l\")", " 3 ")]
+    public void CharactersAreWhole(string expression, string expected) => Assert.Equal(expected, Print(expression));
+
+    [Fact]
+    public void AnAstralCharacterIsTwoUnitsAndSplittingItIsHarmless()
+    {
+        // 😀 is two UTF-16 units, as it would be in a language that counts them. Cutting between the halves must not crash.
+        Assert.Equal(" 2 ", Print("LEN(\"😀\")"));
+        var m = new Basic.Machine();
+        m.TakeOutput();
+        m.Enter("PRINT LEFT$(\"😀\",1)");
+        m.Enter("PRINT ASC(MID$(\"😀\",2,1))");
+        Assert.Contains("READY", m.TakeOutput());
+    }
+
+    [Fact]
+    public void ProgramsKeepNonAsciiStringsAcrossStatements()
+    {
+        var m = new Basic.Machine();
+        m.TakeOutput();
+        m.Load("10 A$=\"café\"\n20 B$=LEFT$(A$,3)+\"é\"\n30 PRINT B$;LEN(B$)\n");
+        m.Enter("RUN");
+        Assert.Contains("café 4 ", m.TakeOutput());   // LEFT$("café",3) is "caf", and the é is added back
+    }
+
+    [Fact]
+    public void EveryLineOfANonAsciiProgramListsBack()
+    {
+        var m = new Basic.Machine();
+        m.TakeOutput();
+        m.Load("10 PRINT \"héllo ✓\"\n");
+        m.Enter("LIST");
+        Assert.Contains("10 PRINT \"héllo ✓\"", m.TakeOutput());
+    }
+
+    [Fact]
+    public void EveryShortStringOverAMixedAlphabetEndsInAnAnswerOrABasicError()
+    {
+        // The no-crash policy for the one place a user types freely: any short string over ASCII, accented, CJK and astral characters,
+        // used with each string function, must produce text, not an exception.
+        const string alphabet = "a é世😀\"";
+        var chars = alphabet.EnumerateRunes().Select(r => r.ToString()).ToArray();
+        var m = new Basic.Machine();
+        m.TakeOutput();
+        int tried = 0;
+        foreach (var a in chars) foreach (var b in chars) foreach (var c in chars)
+        {
+            string s = (a + b + c).Replace("\"", "");
+            foreach (var call in new[] { $"LEFT$(\"{s}\",2)", $"RIGHT$(\"{s}\",2)", $"MID$(\"{s}\",2,1)", $"LEN(\"{s}\")", $"ASC(\"{s}\")", $"INSTR(\"{s}\",\"é\")", $"STR$(LEN(\"{s}\"))+\"{s}\"" })
+            {
+                var status = m.Enter("PRINT " + call);
+                Assert.True(status is "done" or "waiting", $"{call} -> {status}");
+                tried++;
+            }
+            m.TakeOutput();
+        }
+        Assert.True(tried > 1500);
+    }
+}

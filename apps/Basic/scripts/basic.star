@@ -1135,6 +1135,15 @@ def submit(st, text, budget):
         enter_line(st, text)
     return run(st, budget)
 
+# After a fault in this script itself (a bug, not a BASIC error): drop whatever was running and show READY again. The program,
+# variables and screen are left as they were.
+def recover(st):
+    st["running"] = False
+    st["waiting"] = None
+    st["cont"] = None
+    ready(st)
+    return "done"
+
 # Whether typed lines are echoed into the output. A terminal shows what the user types by itself, so a terminal host turns this off;
 # a test or a pipe has no echo of its own, so it stays on.
 def set_echo(st, on):
