@@ -48,6 +48,7 @@ public static class Builtins
         });
 
         u["dict"] = new Builtin("dict", MakeDict);
+        InternalMath.Install(u);
         u["json"] = JsonModule.Create();
         u["typing"] = TypingModule.Create();
 

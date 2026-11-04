@@ -49,6 +49,13 @@ public static class BuiltinSignatures
     public static readonly IReadOnlyDictionary<string, Signature> Functions = new Dictionary<string, Signature>
     {
         ["abs"] = S(Num, P("x", Num)),
+        // The host's fast elementary functions (see InternalMath); the underscore marks them as internal.
+        ["_sin"] = S(Ty.Float, P("x", Num)),
+        ["_cos"] = S(Ty.Float, P("x", Num)),
+        ["_exp"] = S(Ty.Float, P("x", Num)),
+        ["_log"] = S(Ty.Float, P("x", Num), P("base", Num, false)),
+        ["_log2"] = S(Ty.Float, P("x", Num)),
+        ["_atan"] = S(Ty.Float, P("x", Num)),
         ["parallel_map"] = S(new Ty.ListTy(Ty.Any), P("function", Ty.Callable), P("iterable", IterAny)),
         ["all_of"] = S(new Ty.ListTy(Ty.Any), P("futures", new Ty.IterableTy(new Ty.Name("future")))),
         ["spawn"] = S(new Ty.Name("future"), P("function", Ty.Callable), Rest(Anything), new SigParam("kwargs", ParamMode.Kwargs, Anything, false)),

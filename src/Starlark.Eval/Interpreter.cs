@@ -401,7 +401,7 @@ public sealed class Interpreter
         Collect(ast.Statement);
         foreach (var id in loads)
         {
-            if (!seen.Add(id) || SourceLoader?.Invoke(id) is not { } source) continue;
+            if (!seen.Add(id) || (SourceLoader?.Invoke(id) ?? StandardLibrary.Read(id)) is not { } source) continue;
             var loaded = TypecheckWithLoads(AstModule.Parse(id, source, Dialect), seen);
             errors.AddRange(loaded.Errors);
             approximations.AddRange(loaded.Approximations);
@@ -574,7 +574,7 @@ public sealed class Interpreter
         {
             return cached ?? throw new StarlarkException($"Cycle in load graph: module `{id}` is being loaded");
         }
-        string src = SourceLoader?.Invoke(id) ?? throw new StarlarkException($"Cannot load module `{id}`");
+        string src = SourceLoader?.Invoke(id) ?? StandardLibrary.Read(id) ?? throw new StarlarkException($"Cannot load module `{id}`");
         _moduleCache[id] = null; // mark as in progress, to detect cycles
         try
         {
