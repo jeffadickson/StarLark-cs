@@ -579,3 +579,34 @@ public class GoCompatTests
         Assert.Equal(2, depth);   // g and depth: a call from the host starts a fresh stack
     }
 }
+
+/// <summary>Grammar corner cases from Go's own list.star: what may follow <c>if</c> in a comprehension.</summary>
+public class ComprehensionConditionTests
+{
+    private static string R(string expression) =>
+        Repr.Of(new Interpreter { Dialect = Dialect.Standard with { EnableTopLevelStmt = true } }.Execute("t.star", "r = " + expression + "\n").Globals["r"]);
+
+    [Fact]
+    public void ALambdaIsAValidCondition() =>
+        Assert.Equal("[1, 2]", R("[x for x in [1, 2] if lambda: None]"));   // a lambda is a function, which is always true
+
+    [Fact]
+    public void AParenthesisedTernaryLambdaIsAValidCondition() =>
+        Assert.Equal("[1, 2]", R("[x for x in [1, 2] if (lambda: 3 if True else 4)]"));
+
+    [Fact]
+    public void ALambdaConditionStopsBeforeTheNextIf() =>
+        Assert.Equal("[2]", R("[x for x in [1, 2] if lambda: None if x == 2]"));   // the second `if` is a clause, not part of the lambda body
+
+    [Fact]
+    public void SeveralIfClausesStillWork() =>
+        Assert.Equal("[0, 6]", R("[x for x in range(12) if x % 2 == 0 if x % 3 == 0]"));
+
+    [Fact]
+    public void LambdasKeepTheirTernaryBodiesElsewhere() =>
+        Assert.Equal("[3, 4]", R("[(lambda a: 3 if a else 4)(True), (lambda a: 3 if a else 4)(False)]"));
+
+    [Fact]
+    public void ADictComprehensionTakesTheSameConditions() =>
+        Assert.Equal("{1: 1}", R("{x: x for x in [1] if lambda: 0}"));
+}

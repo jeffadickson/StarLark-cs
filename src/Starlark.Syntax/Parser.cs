@@ -498,13 +498,18 @@ internal sealed class Parser
     /// <summary>An <c>OrTest</c>, used in a ternary condition and comprehension <c>if</c> clauses.</summary>
     private Expr ParseOrTest() => ParseExpr(0);
 
-    private Expr ParseLambda()
+    private Expr ParseLambda() => ParseLambda(allowTernaryBody: true);
+
+    /// <summary>A lambda whose body is not allowed to be a ternary (<c>x if y else z</c>), used where a following <c>if</c> must be left alone.</summary>
+    private Expr ParseLambdaNoCondition() => ParseLambda(allowTernaryBody: false);
+
+    private Expr ParseLambda(bool allowTernaryBody)
     {
         int l = Pos;
         Advance(); // lambda
         var parameters = ParseCommaSeparatedLambdaParams();
         Expect(TokenKind.Colon);
-        var body = ParseTest();
+        var body = allowTernaryBody ? ParseTest() : PeekIs(TokenKind.Lambda) ? ParseLambdaNoCondition() : ParseOrTest();
         return new LambdaExpr(parameters, body, SpanOf(l, _lastEnd));
     }
 
@@ -914,7 +919,9 @@ internal sealed class Parser
             else if (PeekIs(TokenKind.If))
             {
                 Advance();
-                clauses.Add(new IfClause(ParseOrTest()));
+                // A condition may be a lambda (the grammar says `if Expression`), but not a ternary: `a if b else c` would clash
+                // with the next `if` clause, so a lambda's body here stops before any `if`, as in Go.
+                clauses.Add(new IfClause(PeekIs(TokenKind.Lambda) ? ParseLambdaNoCondition() : ParseOrTest()));
             }
             else
             {
