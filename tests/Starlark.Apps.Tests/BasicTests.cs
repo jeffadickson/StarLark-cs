@@ -625,3 +625,65 @@ public class BasicDataTests
     [Fact]
     public void ColonAfterDataEndsIt() => Assert.Contains(" 5 ", Run("10 DATA 5:READ A:PRINT A\n"));
 }
+
+/// <summary>The bundled sine-wave program: four periods drawn with the built-in SIN.</summary>
+public class BasicSineTests
+{
+    private static string[] Rows()
+    {
+        var m = new Basic.Machine();
+        m.TakeOutput();
+        m.Load(Basic.Scripts.ReadProgram("sine")!);
+        m.Enter("RUN");
+        var text = m.TakeOutput().Replace("\r", "");
+        var lines = (text.StartsWith("RUN\n") ? text[4..] : text).Split('\n');
+        return lines.Take(15).ToArray();
+    }
+
+    [Fact]
+    public void ItDrawsFifteenRowsOfSixtyColumns() => Assert.All(Rows(), r => Assert.Equal(60, r.Length));
+
+    [Fact]
+    public void EveryColumnHasExactlyOneStarOnTheWave()
+    {
+        var rows = Rows();
+        for (int x = 0; x < 60; x++) Assert.Equal(1, rows.Count(r => r[x] == '*'));
+    }
+
+    [Fact]
+    public void ThereAreFourCrestsAndFourTroughs()
+    {
+        var rows = Rows();
+        int[] y = Enumerable.Range(0, 60).Select(x => Array.FindIndex(rows, r => r[x] == '*')).ToArray();
+        // A crest is the top row (0 or 1) and a trough the bottom (13 or 14); count entries into each band.
+        int crests = 0, troughs = 0;
+        for (int x = 0; x < 60; x++)
+        {
+            bool top = y[x] <= 1, bottom = y[x] >= 13;
+            if (top && (x == 0 || y[x - 1] > 1)) crests++;
+            if (bottom && (x == 0 || y[x - 1] < 13)) troughs++;
+        }
+        Assert.Equal(4, crests);
+        Assert.Equal(4, troughs);
+    }
+
+    [Fact]
+    public void EachPeriodRepeatsExactly()
+    {
+        var rows = Rows();
+        int[] y = Enumerable.Range(0, 60).Select(x => Array.FindIndex(rows, r => r[x] == '*')).ToArray();
+        for (int x = 0; x < 45; x++) Assert.Equal(y[x], y[x + 15]);
+    }
+
+    [Fact]
+    public void ThePositiveHalfIsAboveTheAxis()
+    {
+        var rows = Rows();
+        // sin is positive in columns 1..7 of each period, so those stars sit above the axis row (7); columns 8..14 sit below it.
+        for (int p = 0; p < 4; p++)
+        {
+            for (int c = 1; c <= 6; c++) Assert.True(Array.FindIndex(rows, r => r[p * 15 + c] == '*') < 7, $"period {p} column {c}");
+            for (int c = 9; c <= 14; c++) Assert.True(Array.FindIndex(rows, r => r[p * 15 + c] == '*') > 7, $"period {p} column {c}");
+        }
+    }
+}
