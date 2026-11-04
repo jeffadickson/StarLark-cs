@@ -135,7 +135,7 @@ public sealed class EllipsisMarker
 /// <summary>The <c>typing</c> module.</summary>
 public static class TypingModule
 {
-    public static StarStruct Create() => new(
+    public static StarModule Create() => new("typing",
     [
         new("Any", new TypeValue(Ty.Any)),
         new("Never", new TypeValue(Ty.Never)),

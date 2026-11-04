@@ -512,6 +512,7 @@ public static class Ops
         StarSet s => s.Count,
         StarEnumType et => et.Instances.Count,
         StarRange r => r.Count,
+        StarElems { IsIndexable: true } e => e.Length,
         _ => throw new StarlarkException($"Type '{Types.Name(v)}' has no len()"),
     };
 
@@ -541,6 +542,11 @@ public static class Ops
         {
             if (index is not BigInteger ei) throw Err.BadIndex("index", index);
             return et.Instances[NormIndex(ei, et.Instances.Count)];
+        }
+        if (target is StarElems { IsIndexable: true } elems)
+        {
+            if (index is not BigInteger ei2) throw Err.BadIndex("index", index);
+            return elems.At(NormIndex(ei2, elems.Length));
         }
         if (target is not (StarList or StarTuple or string or StarUtf16 or StarBytes or StarRange))
         {

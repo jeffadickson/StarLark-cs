@@ -49,6 +49,8 @@ public static class BuiltinSignatures
     public static readonly IReadOnlyDictionary<string, Signature> Functions = new Dictionary<string, Signature>
     {
         ["abs"] = S(Num, P("x", Num)),
+        ["chr"] = S(Str, P("i", Ty.Int)),
+        ["ord"] = S(Ty.Int, P("s", Ty.Union([Str, Ty.Utf16, Ty.Bytes]))),
         // The host's fast elementary functions (see InternalMath); the underscore marks them as internal.
         ["_sin"] = S(Ty.Float, P("x", Num)),
         ["_cos"] = S(Ty.Float, P("x", Num)),
@@ -121,7 +123,7 @@ public static class BuiltinSignatures
                     "find" or "rfind" or "index" or "rindex" or "count" => Ty.Int,
                     "split" or "rsplit" or "splitlines" => new Ty.ListTy(own),
                     "partition" or "rpartition" => new Ty.TupleTy([own, own, own]),
-                    "elems" => Ty.Iterable,
+                    "elems" or "elem_ords" or "codepoints" or "codepoint_ords" => Ty.Iterable,
                     _ => null,
                 };
             case Ty.ListTy l:

@@ -9,7 +9,7 @@ public static class JsonModule
 {
     private const int MaxDepth = 128;
 
-    public static StarStruct Create() => new(
+    public static StarModule Create() => new("json",
     [
         new("encode", new Builtin("encode", (_, a, k) =>
         {
@@ -44,6 +44,21 @@ public static class JsonModule
             string indent = r.OptStr("indent") ?? "\t";
             r.Done();
             return Indent(s, prefix, indent);
+        })),
+        // encode_indent(x, prefix="", indent="\t"): encode, then indent. The encoding and the indentation are exactly those of
+        // json.encode followed by json.indent, as in Go.
+        new("encode_indent", new Builtin("encode_indent", (_, a, k) =>
+        {
+            var r = new ArgReader("json.encode_indent", a, k);
+            var x = r.Required("x");
+            // prefix and indent are keyword-only, as in Go.
+            if (r.RemainingPositional > 0) throw new StarlarkException($"json.encode_indent: got {a.Count} arguments, want 1");
+            string prefix = r.OptStr("prefix") ?? "";
+            string indent = r.OptStr("indent") ?? "\t";
+            r.Done();
+            var sb = new StringBuilder();
+            Encode(sb, x, new HashSet<object>(ReferenceEqualityComparer.Instance), 0);
+            return Indent(sb.ToString(), prefix, indent);
         })),
     ]);
 

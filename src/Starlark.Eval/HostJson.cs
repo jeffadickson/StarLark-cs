@@ -28,7 +28,7 @@ public static class HostJson
     /// <exception cref="StarlarkException">The text is not valid JSON.</exception>
     public static object? ToScript(string json)
     {
-        var decode = (Builtin)JsonModule.Create().Fields.First(f => f.Key == "decode").Value!;
+        var decode = (Builtin)JsonModule.Create().Members["decode"]!;
         return decode.Call(null!, [json], []);
     }
 
@@ -38,7 +38,7 @@ public static class HostJson
     /// <summary>Serializes a Starlark value to JSON text (the same result as the script-side <c>json.encode</c>).</summary>
     public static string ToJson(object? value)
     {
-        var encode = (Builtin)JsonModule.Create().Fields.First(f => f.Key == "encode").Value!;
+        var encode = (Builtin)JsonModule.Create().Members["encode"]!;
         return (string)encode.Call(null!, [value], [])!;
     }
 

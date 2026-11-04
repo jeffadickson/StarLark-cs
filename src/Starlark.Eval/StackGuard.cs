@@ -20,5 +20,7 @@ internal static class StackGuard
         }
     }
 
-    private static void Fail() => throw new StarlarkException("Value is nested too deeply");
+    // "maximum recursion" is the phrase Go uses for comparing a value with itself through a cycle; "nested too deeply" says it for
+    // the other cause (a legitimately deep value), so the message carries both.
+    private static void Fail() => throw new StarlarkException("Value is nested too deeply: maximum recursion depth reached");
 }

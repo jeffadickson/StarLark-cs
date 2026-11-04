@@ -152,24 +152,124 @@ public sealed class StarTuple(object?[] items)
     public static readonly StarTuple Empty = new([]);
 }
 
-/// <summary>The opaque iterable returned by <c>string.elems()</c> and <c>bytes.elems()</c>.</summary>
-public sealed class StarElems(object source)
+/// <summary>
+/// The opaque iterable returned by <c>string.elems()</c>, <c>elem_ords()</c>, <c>codepoints()</c>, <c>codepoint_ords()</c> and
+/// <c>bytes.elems()</c>. Element iterables have a known length and can be indexed; code point iterables can be neither,
+/// because a code point's position is not its offset.
+/// </summary>
+public sealed class StarElems(object source, bool ords = false, bool codepoints = false)
 {
     public object Source { get; } = source;
+
+    /// <summary>True if the iterable yields numbers (<c>elem_ords</c>, <c>codepoint_ords</c>) rather than strings.</summary>
+    public bool Ords { get; } = ords;
+
+    /// <summary>True if the iterable yields Unicode code points (<c>codepoints</c>, <c>codepoint_ords</c>) rather than elements.</summary>
+    public bool Codepoints { get; } = codepoints;
+
     public string TypeName => Source switch
     {
-        string => "string.elems",
-        StarUtf16 => "utf16.elems",
+        string => Codepoints ? "string.codepoints" : "string.elems",
+        StarUtf16 => Codepoints ? "utf16.codepoints" : "utf16.elems",
         _ => "bytes.elems",
     };
 
-    public IEnumerable<object?> Items => Source switch
+    /// <summary>The method that made this iterable, for <c>repr</c>.</summary>
+    public string MethodName => (Codepoints, Ords) switch
     {
-        string s => s.Select(c => (object?)c.ToString()),
-        StarUtf16 u => u.Value.Select(c => (object?)new StarUtf16(c.ToString())),
-        StarBytes b => b.Value.Select(x => (object?)new BigInteger(x)),
-        _ => [],
+        (true, true) => "codepoint_ords",
+        (true, false) => "codepoints",
+        (false, true) => "elem_ords",
+        _ => "elems",
     };
+
+    public IEnumerable<object?> Items
+    {
+        get
+        {
+            switch (Source)
+            {
+                case string s when Codepoints:
+                    return Ords
+                        ? CodePoints.Runes(s).Select(r => (object?)new BigInteger(r))
+                        : CodePoints.Runes(s).Select(r => (object?)CodePoints.Text(r));
+                case string s when Ords:
+                    return Strings.Mode == StringElements.Utf8
+                        ? System.Text.Encoding.UTF8.GetBytes(s).Select(x => (object?)new BigInteger(x))
+                        : s.Select(c => (object?)new BigInteger(c));
+                case string s:
+                    return s.Select(c => (object?)c.ToString());
+                case StarUtf16 u when Codepoints:
+                    return Ords
+                        ? CodePoints.Runes(u.Value).Select(r => (object?)new BigInteger(r))
+                        : CodePoints.Runes(u.Value).Select(r => (object?)new StarUtf16(CodePoints.Text(r)));
+                case StarUtf16 u when Ords:
+                    return u.Value.Select(c => (object?)new BigInteger(c));
+                case StarUtf16 u:
+                    return u.Value.Select(c => (object?)new StarUtf16(c.ToString()));
+                case StarBytes b:
+                    return b.Value.Select(x => (object?)new BigInteger(x));
+                default:
+                    return [];
+            }
+        }
+    }
+
+    /// <summary>True if the iterable has a length and can be indexed (element iterables, not code point iterables).</summary>
+    public bool IsIndexable => !Codepoints;
+
+    /// <summary>The number of elements (only meaningful when <see cref="IsIndexable"/>).</summary>
+    public int Length => Source switch
+    {
+        string s => Strings.Len(s),
+        StarUtf16 u => u.Value.Length,
+        StarBytes b => b.Value.Length,
+        _ => 0,
+    };
+
+    /// <summary>The element at an index already known to be in range.</summary>
+    public object? At(int i)
+    {
+        switch (Source)
+        {
+            case string s when Ords:
+                return Strings.Mode == StringElements.Utf8 && s.Any(c => c >= 0x80)
+                    ? new BigInteger(System.Text.Encoding.UTF8.GetBytes(s)[i])
+                    : new BigInteger(s[i]);
+            case string s:
+                return Strings.At(s, i);
+            case StarUtf16 u when Ords:
+                return new BigInteger(u.Value[i]);
+            case StarUtf16 u:
+                return new StarUtf16(u.Value[i].ToString());
+            case StarBytes b:
+                return new BigInteger(b.Value[i]);
+            default:
+                return null;
+        }
+    }
+}
+
+/// <summary>Unicode code points of a .NET string. A lone surrogate, which is not text, reads as U+FFFD, as invalid bytes do in Go.</summary>
+internal static class CodePoints
+{
+    public static IEnumerable<int> Runes(string s)
+    {
+        for (int i = 0; i < s.Length; i++)
+        {
+            char c = s[i];
+            if (char.IsHighSurrogate(c) && i + 1 < s.Length && char.IsLowSurrogate(s[i + 1]))
+            {
+                yield return char.ConvertToUtf32(c, s[++i]);
+            }
+            else
+            {
+                yield return char.IsSurrogate(c) ? 0xFFFD : c;
+            }
+        }
+    }
+
+    public static string Text(int codePoint) => char.ConvertFromUtf32(codePoint);
 }
 
 public sealed class StarRange(BigInteger start, BigInteger stop, BigInteger step)
@@ -644,7 +744,7 @@ public static class Repr
             StarDict d => OfDict(d, active),
             StarSet s => OfSet(s, active),
             StarRange r => r.Step.IsOne ? $"range({r.Start}, {r.Stop})" : $"range({r.Start}, {r.Stop}, {r.Step})",
-            StarElems e => e.Source is string s2 ? $"{Quote(s2)}.elems()" : $"{Of(e.Source, active)}.elems()",
+            StarElems e => $"{Of(e.Source, active)}.{e.MethodName}()",
             TypeValue t => t.Ty.ToString(),
             StarRecordType rt => $"<record type>",
             StarEnumType et => "enum(" + Join(et.Values, active) + ")",

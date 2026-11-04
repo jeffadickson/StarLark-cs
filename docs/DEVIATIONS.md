@@ -8,7 +8,16 @@ This port follows the Starlark spec and the starlark-rust behaviour. Where it di
   `Interpreter.StringElements = StringElements.Utf8` for Go/Rust-compatible offsets, or use the separate `utf16` type.
 - **`dict.update(None)` is an error**, rather than a no-op.
 - **Negative indexes work with `list.pop`** (`xs.pop(-1)`), as in Python and the reference implementations.
-- **Recursion is an error**, per the spec, and call depth is also capped at 150.
+- **Recursion is an error**, per the spec, and call depth is also capped at 150. Set `Dialect.EnableRecursion` to allow it, as
+  Go's `option:recursion` does: the cap then rises to 1000 (`Interpreter.MaxCallDepth` changes it either way), and a runaway
+  recursion ends in the error "Starlark stack overflow" long before the process stack runs out.
+- **Compared with Starlark-Go** (checked against its own test data, `starlark/testdata`): `chr`, `ord`, `string.codepoints()`,
+  `codepoint_ords()`, `elem_ords()`, the `module` type (`json` and `typing` are modules), `json.encode_indent`, positional-only
+  `dict.get`, `pop` and `setdefault`, and `ScriptThread` (Go's `Thread`) are all provided. Still different: `assert` is a
+  reserved word here (Go allows it), a tab is not accepted as indentation (Go accepts it), `while` is not supported, error
+  messages are worded differently in many places (the same difference as from the Rust and Java suites), and `bytes` has none of
+  the string-like methods. A string cut inside a UTF-8 character cannot exist here (slicing it is an error), so Go's
+  `ord("Й"[1:]) == 0xFFFD` has no equivalent; a lone UTF-16 surrogate reads as U+FFFD.
 
 ## Not implemented
 

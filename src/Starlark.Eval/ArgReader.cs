@@ -87,6 +87,15 @@ public sealed class ArgReader
         return v is bool b ? b : throw Err.Param(name, "bool", v);
     }
 
+    /// <summary>
+    /// Rejects keyword arguments for a method whose parameters are positional-only (Go's <c>D.get</c>, <c>D.pop</c> and
+    /// <c>D.setdefault</c>). The message is Go's: <c>get: unexpected keyword arguments</c>.
+    /// </summary>
+    public void PositionalOnly(string name)
+    {
+        if (_kwargs.Count > 0) throw new StarlarkException($"{name}: unexpected keyword arguments");
+    }
+
     /// <summary>Everything left over after the named parameters, as *args.</summary>
     public List<object?> Rest()
     {

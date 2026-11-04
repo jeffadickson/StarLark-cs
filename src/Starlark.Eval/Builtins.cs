@@ -32,6 +32,44 @@ public static class Builtins
             var v => throw Err.Param("x", "int or float", v),
         });
 
+        // chr(i): the string holding the one Unicode code point i. Go's wording is kept for the error cases.
+        Add(u, "chr", (_, a) =>
+        {
+            var v = a.Required("i");
+            if (v is not BigInteger n) throw new StarlarkException($"chr: got {Types.Name(v)}, want int");
+            if (n < 0) throw new StarlarkException($"chr: Unicode code point {n} out of range (<0)");
+            if (n > 0x10FFFF) throw new StarlarkException($"chr: Unicode code point U+{n.ToString("X").TrimStart('0')} out of range (>0x10FFFF)");
+            if (n >= 0xD800 && n <= 0xDFFF) throw new StarlarkException($"chr: Unicode code point U+{(int)n:X4} is a surrogate, not a character");
+            return char.ConvertFromUtf32((int)n);
+        });
+
+        // ord(s): the code point of a one-character string, or the byte of a one-byte bytes value. (Go also reads a string cut
+        // inside a character as U+FFFD; here such a cut is an error when slicing, so that string cannot exist.)
+        Add(u, "ord", (_, a) =>
+        {
+            var v = a.Required("s");
+            switch (v)
+            {
+                case string s:
+                {
+                    var runes = CodePoints.Runes(s).ToList();
+                    if (runes.Count != 1) throw new StarlarkException($"ord: string encodes {runes.Count} Unicode code points, want 1");
+                    return new BigInteger(runes[0]);
+                }
+                case StarUtf16 u16:
+                {
+                    var runes = CodePoints.Runes(u16.Value).ToList();
+                    if (runes.Count != 1) throw new StarlarkException($"ord: string encodes {runes.Count} Unicode code points, want 1");
+                    return new BigInteger(runes[0]);
+                }
+                case StarBytes b:
+                    if (b.Value.Length != 1) throw new StarlarkException($"ord: bytes has length {b.Value.Length}, want 1");
+                    return new BigInteger(b.Value[0]);
+                default:
+                    throw new StarlarkException($"ord: got {Types.Name(v)}, want string or bytes");
+            }
+        });
+
         Add(u, "all", (_, a) => Ops.Iterate(a.Required("x")).All(Types.Truthy));
         Add(u, "any", (_, a) => Ops.Iterate(a.Required("x")).Any(Types.Truthy));
         Add(u, "bool", (_, a) => Types.Truthy(a.Optional("x", false)));

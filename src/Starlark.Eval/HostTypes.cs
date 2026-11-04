@@ -21,7 +21,7 @@ public static class HostTypes
         var ps = new List<SigParam>();
         foreach (var p in method.GetParameters())
         {
-            if (p.ParameterType == typeof(Interpreter) || p.ParameterType == typeof(CancellationToken)) continue;
+            if (p.ParameterType == typeof(Interpreter) || p.ParameterType == typeof(CancellationToken) || p.ParameterType == typeof(ScriptThread)) continue;
             string pname = p.Name ?? "arg";
             string snake = Interop.SnakeCase(pname);
             ps.Add(new SigParam(snake, ParamMode.PosOrName, ForParameter(p.ParameterType), !p.HasDefaultValue)

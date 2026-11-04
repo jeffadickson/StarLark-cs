@@ -140,6 +140,12 @@ public static class Interop
                 bound[i] = hostRun?.Token ?? running?.Token ?? interp.Cancellation;
                 set[i] = true;
             }
+            else if (parameters[i].ParameterType == typeof(ScriptThread))
+            {
+                // Frame 0 is the host function itself, as Go counts the built-in that is running.
+                bound[i] = running is null ? null : new ScriptThread(running, shownName);
+                set[i] = true;
+            }
             else
             {
                 visible.Add(i);

@@ -134,7 +134,32 @@ public sealed class Interpreter
 {
     private enum Flow { Normal, Break, Continue, Return }
 
-    private const int MaxCallDepth = 150;
+    private const int DefaultCallDepth = 150;
+    private const int DefaultRecursionDepth = 1000;
+
+    private int? _maxCallDepth;
+
+    /// <summary>
+    /// The deepest chain of script calls. The default is 150 without recursion and 1000 with <see cref="Dialect.EnableRecursion"/>;
+    /// the thread's remaining stack is checked as well, so a larger value cannot crash the process, only end the run with an error sooner.
+    /// </summary>
+    public int MaxCallDepth
+    {
+        get => _maxCallDepth ?? (Dialect.EnableRecursion ? DefaultRecursionDepth : DefaultCallDepth);
+        set => _maxCallDepth = value > 0 ? value : throw new ArgumentOutOfRangeException(nameof(value));
+    }
+
+    /// <summary>The name given to each run's thread, for debugging; scripts and host functions can read it with <see cref="ScriptThread.Name"/>.</summary>
+    public string ThreadName { get; set; } = "";
+
+    /// <summary>Host data copied into the thread-locals of every run that starts, before the script executes. Scripts cannot see it.</summary>
+    public Dictionary<string, object?>? ThreadLocals { get; set; }
+
+    /// <summary>
+    /// The thread that is running script code on the calling thread, or null if none is. This is the way to reach the thread from
+    /// a function registered with <c>Define</c>; a function registered with <c>Register</c> can instead declare a <see cref="ScriptThread"/> parameter.
+    /// </summary>
+    public ScriptThread? CurrentThread => ExecutionContext.Current is { } ctx && ReferenceEquals(ctx.Interpreter, this) ? new ScriptThread(ctx, null) : null;
 
     private readonly Dictionary<string, object?> _universe = [];
     private readonly Dictionary<string, Module?> _moduleCache = [];
@@ -433,7 +458,15 @@ public sealed class Interpreter
         var frame = new Frame(null, names, isModule: true);
         // Budgets cover the outermost call, including every module it loads: a nested Execute reuses the context.
         using var scope = ExecutionContext.EnterRun(this);
-        ExecStmt(ast.Statement, frame, ast.CodeMap);
+        Ctx.PushFrame("<module>", ast.CodeMap);
+        try
+        {
+            ExecStmt(ast.Statement, frame, ast.CodeMap);
+        }
+        finally
+        {
+            Ctx.PopFrame();
+        }
         if (scope.IsOutermost) Futures.FutureBuiltins.CheckAllCollected(Ctx);
         foreach (var v in frame.Vars.Values) Freezer.Freeze(v);
         frame.Sealed = true;
@@ -634,8 +667,12 @@ public sealed class Interpreter
                 Ops.SetIndex(EvalExpr(ix.Target, f, cm), EvalExpr(ix.Index, f, cm), value);
                 break;
             case DotTarget d:
+            {
+                var owner = EvalExpr(d.Target, f, cm);
+                if (owner is StarModule) throw new StarlarkException(StarModule.CannotAssign(d.Field.Value));
                 throw new StarlarkException(
-                    $"Cannot assign to field `{d.Field.Value}` of a value of type '{Types.Name(EvalExpr(d.Target, f, cm))}': not supported");
+                    $"Cannot assign to field `{d.Field.Value}` of a value of type '{Types.Name(owner)}': not supported");
+            }
         }
     }
 
@@ -686,8 +723,12 @@ public sealed class Interpreter
                 break;
             }
             case DotTarget d:
+            {
+                var owner = EvalExpr(d.Target, f, cm);
+                if (owner is StarModule) throw new StarlarkException(StarModule.CannotAssign(d.Field.Value));
                 throw new StarlarkException(
-                    $"Cannot assign to field `{d.Field.Value}` of a value of type '{Types.Name(EvalExpr(d.Target, f, cm))}': not supported");
+                    $"Cannot assign to field `{d.Field.Value}` of a value of type '{Types.Name(owner)}': not supported");
+            }
             default:
                 throw new StarlarkException("Invalid target of augmented assignment");
         }
@@ -776,17 +817,22 @@ public sealed class Interpreter
         // A function of a frozen module called from a thread that is not running a script gets its own run state.
         using var scope = ExecutionContext.EnterRun(this);
         var ctx = Ctx;
-        if (ctx.Depth >= MaxCallDepth || !System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
+        bool recursion = Dialect.EnableRecursion;
+        int limit = MaxCallDepth;
+        if (ctx.Depth >= limit || !System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
         {
-            throw new StarlarkException("Maximum call depth exceeded");
+            throw new StarlarkException(recursion ? $"Starlark stack overflow: more than {ctx.Depth} nested calls" : "Maximum call depth exceeded");
         }
-        if (!ctx.Active.Add(fn.Decl))
+        // Without recursion, a function already on the stack may not be entered again.
+        bool tracked = !recursion;
+        if (tracked && !ctx.Active.Add(fn.Decl))
         {
             throw new StarlarkException($"Function `{fn.Name}` was called recursively: recursion is not allowed in Starlark");
         }
 
         var frame = new Frame(fn.Closure, fn.Locals, isModule: false);
         ctx.Depth++;
+        ctx.PushFrame(fn.Name, fn.CodeMap);
         int spawnedBefore = ctx.Spawned.Count;
         try
         {
@@ -816,7 +862,8 @@ public sealed class Interpreter
         finally
         {
             ctx.Depth--;
-            ctx.Active.Remove(fn.Decl);
+            ctx.PopFrame();
+            if (tracked) ctx.Active.Remove(fn.Decl);
         }
     }
 
@@ -1209,6 +1256,7 @@ public sealed class Interpreter
         {
             throw new StarlarkException($"Operation `call()` not supported on type '{Types.Name(callee)}': not callable");
         }
+        Ctx.NoteCall(call.Span, cm);   // so a ScriptThread can say where each frame is
         return c.Call(this, args, kwargs ?? NoKwargs);
     }
 

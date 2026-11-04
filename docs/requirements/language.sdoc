@@ -255,6 +255,20 @@ VERIFICATION: ApproxMathTests
 COMMENT: The package's sin and cos reduce the argument with a four part pi/2, exact to about 1.6 million; beyond that the error grows with |x|.
 
 [REQUIREMENT]
+UID: LANG-LIB-007
+STATUS: Implemented
+TITLE: Go compatibility surface
+STATEMENT: >>>
+The library shall provide the parts of Starlark-Go that scripts and hosts rely on: chr and ord; string codepoints, codepoint_ords and
+elem_ords with Go's indexing and length rules; a module type (json and typing are modules) with Go's error wording; json.encode_indent;
+dictionary get, pop and setdefault taking positional arguments only; an option to allow recursion that still ends runaway
+recursion in an error; and a ScriptThread giving a host function the name, step count, call stack, call frames and thread-local
+storage of the running script.
+<<<
+VERIFICATION: GoCompatTests
+COMMENT: Checked against the upstream starlark/testdata files; see docs/DEVIATIONS.md for what still differs.
+
+[REQUIREMENT]
 UID: LANG-LIB-005
 STATUS: Implemented
 TITLE: Conformance suites

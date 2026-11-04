@@ -23,7 +23,7 @@ public class JsonTests
     {
         Assert.Equal("{" + Q + "a" + Q + ":1}", S("json.encode({'a': 1})"));
         Assert.Equal("{" + Q + "a" + Q + ": 1}", R("json.decode('{\"a\": 1}')"));
-        Assert.Equal("struct", S("type(json)"));
+        Assert.Equal("module", S("type(json)"));   // as in Go; it was "struct" before the module type existed
     }
 
     [Theory]

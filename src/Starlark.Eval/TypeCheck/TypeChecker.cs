@@ -1098,8 +1098,11 @@ public sealed class TypeChecker
                 if (pos.Count < 1) Error(call.Function.Span, "Missing required parameter `s`");
                 else Expect(pos[0].Ty, Ty.Str, pos[0].Span);
                 return Ty.Str;
+            case "encode_indent":
+                if (pos.Count != 1) Error(call.Function.Span, pos.Count == 0 ? "Missing required parameter `x`" : "Too many positional arguments");
+                return Ty.Str;
             default:
-                Error(call.Function.Span, $"The attribute `{name}` is not available on the type `struct(encode = typing.Callable, decode = typing.Callable, indent = typing.Callable)`");
+                Error(call.Function.Span, $"The attribute `{name}` is not available on the type `struct(encode = typing.Callable, decode = typing.Callable, indent = typing.Callable, encode_indent = typing.Callable)`");
                 return Ty.Never;
         }
     }

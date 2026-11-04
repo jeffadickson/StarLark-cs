@@ -21,6 +21,8 @@ internal sealed class ExecutionContext
     public ExecutionContext(Interpreter interpreter)
     {
         Interpreter = interpreter;
+        Name = interpreter.ThreadName;
+        SeedLocals(interpreter.ThreadLocals);
         MaxSteps = interpreter.MaxSteps;
         ReportedMaxSteps = interpreter.MaxSteps;
         MaxBytes = interpreter.MaxAllocatedBytes;
@@ -35,6 +37,8 @@ internal sealed class ExecutionContext
     private ExecutionContext(ExecutionContext parent, long maxSteps, CancellationToken token)
     {
         Interpreter = parent.Interpreter;
+        Name = parent.Name;
+        SeedLocals(parent._locals);
         MaxSteps = maxSteps;
         ReportedMaxSteps = parent.ReportedMaxSteps;
         MaxBytes = parent.MaxBytes;
@@ -131,10 +135,75 @@ internal sealed class ExecutionContext
 
     /// <summary>Tells the dispose protocol which context to clean up. Set by <see cref="Enter"/>.</summary>
 
+    // ---------------------------------------------------------------- the live call stack, thread name and locals
+
+    /// <summary>One script function (or module body) that is running, and where control is inside it.</summary>
+    internal struct LiveFrame
+    {
+        public string Name;
+        public Syntax.CodeMap? Map;
+
+        /// <summary>The call being made from this frame right now (so, for every frame but the innermost, the place it is waiting at).</summary>
+        public Syntax.Span? Span;
+    }
+
+    private LiveFrame[] _frames = new LiveFrame[16];
+    private int _frameCount;
+
+    /// <summary>Number of frames on the live call stack.</summary>
+    public int FrameCount => _frameCount;
+
+    /// <summary>Pushes a frame for a function or module body that is about to run.</summary>
+    public void PushFrame(string name, Syntax.CodeMap? map)
+    {
+        if (_frameCount == _frames.Length) Array.Resize(ref _frames, _frames.Length * 2);
+        _frames[_frameCount++] = new LiveFrame { Name = name, Map = map };
+    }
+
+    /// <summary>Pops the innermost frame.</summary>
+    public void PopFrame()
+    {
+        if (_frameCount > 0) _frames[--_frameCount] = default;
+    }
+
+    /// <summary>Records that the innermost frame is making the call at <paramref name="span"/>. Called on every call, so it is kept tiny.</summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public void NoteCall(Syntax.Span span, Syntax.CodeMap map)
+    {
+        if (_frameCount > 0)
+        {
+            ref var top = ref _frames[_frameCount - 1];
+            top.Span = span;
+            top.Map = map;
+        }
+    }
+
+    /// <summary>A copy of the frame <paramref name="depthFromTop"/> places below the top (0 is the innermost).</summary>
+    public LiveFrame FrameAt(int depthFromTop) => _frames[_frameCount - 1 - depthFromTop];
+
+    /// <summary>The name of this thread of execution, for debugging (Go's <c>Thread.Name</c>).</summary>
+    public string Name { get; set; } = "";
+
+    private Dictionary<string, object?>? _locals;
+
+    /// <summary>Host data attached to this run, invisible to scripts. Only the thread running the script touches it.</summary>
+    public Dictionary<string, object?> Locals => _locals ??= [];
+
+    /// <summary>
+    /// Copies the interpreter's <see cref="Interpreter.ThreadLocals"/> into this run, so a host can seed data that every run
+    /// starts with. A task starts with a copy of its spawner's locals.
+    /// </summary>
+    private void SeedLocals(Dictionary<string, object?>? from)
+    {
+        if (from is { Count: > 0 }) _locals = new Dictionary<string, object?>(from);
+    }
+
     /// <summary>Counts one unit of work and, every 1024 units, checks the time and cancellation budgets.</summary>
     public void Step()
     {
-        if (MaxSteps > 0 && ++Steps > MaxSteps)
+        // Steps are always counted, so a host can read the cost of a run without having set a limit.
+        ++Steps;
+        if (MaxSteps > 0 && Steps > MaxSteps)
         {
             throw new ExecutionLimitException("steps", $"Script exceeded the limit of {ReportedMaxSteps} steps");
         }

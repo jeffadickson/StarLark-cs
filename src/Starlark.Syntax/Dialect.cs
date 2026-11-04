@@ -46,6 +46,13 @@ public sealed record Dialect
     public bool EnableFStrings { get; init; }
 
     /// <summary>
+    /// Allow a function to call itself, directly or through other functions, as Go's <c>option:recursion</c> does. Off by default,
+    /// as the specification forbids it. Runaway recursion still ends in an ordinary error ("Starlark stack overflow") when the
+    /// call depth or the thread's stack runs out, never in a crashed process.
+    /// </summary>
+    public bool EnableRecursion { get; init; }
+
+    /// <summary>
     /// Extension, not in the Starlark specification: <c>parallel_map</c>, <c>spawn</c> and <c>all_of</c> and the
     /// <c>future</c> type, with deterministic results. See docs/futures-design.md.
     /// </summary>

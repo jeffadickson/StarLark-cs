@@ -98,6 +98,7 @@ public static class Methods
     public static object? GetAttr(object? target, string name)
     {
         if (TryGetAttr(target, name, out var v)) return v;
+        if (target is StarModule module) throw new StarlarkException(module.MissingMember(name));
         throw new StarlarkException($"Object of type '{Types.Name(target)}' has no attribute `{name}`: no field or method named `{name}`");
     }
 
@@ -190,6 +191,9 @@ public static class Methods
         };
 
         m["elems"] = (_, self, a) => { a.Done(); return new StarElems(self); };
+        m["elem_ords"] = (_, self, a) => { a.Done(); return new StarElems(self, ords: true); };
+        m["codepoints"] = (_, self, a) => { a.Done(); return new StarElems(self, codepoints: true); };
+        m["codepoint_ords"] = (_, self, a) => { a.Done(); return new StarElems(self, ords: true, codepoints: true); };
 
         m["strip"] = (_, self, a) => Strip((string)self, a.OptStr("cutset"), true, true);
         m["lstrip"] = (_, self, a) => Strip((string)self, a.OptStr("cutset"), true, false);
@@ -532,8 +536,10 @@ public static class Methods
     {
         var m = DictMethods;
 
+        // Go and the specification take these arguments by position only: D.get(key, default=1) is an error there.
         m["get"] = (_, self, a) =>
         {
+            a.PositionalOnly("get");
             var key = a.Required("key");
             var dflt = a.Optional("default");
             a.Done();
@@ -549,6 +555,7 @@ public static class Methods
         m["clear"] = (_, self, a) => { a.Done(); ((StarDict)self).Clear(); return null; };
         m["pop"] = (_, self, a) =>
         {
+            a.PositionalOnly("pop");
             var d = (StarDict)self;
             var key = a.Required("key");
             bool hasDefault = a.Has("default");
@@ -569,6 +576,7 @@ public static class Methods
         };
         m["setdefault"] = (_, self, a) =>
         {
+            a.PositionalOnly("setdefault");
             var d = (StarDict)self;
             var key = a.Required("key");
             var dflt = a.Optional("default");

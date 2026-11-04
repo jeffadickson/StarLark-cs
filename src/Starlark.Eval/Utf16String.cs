@@ -35,8 +35,8 @@ internal static class Utf16
                 return new StarList(l.Items.Select(Wrap));
             case StarTuple t:
                 return new StarTuple(t.Items.Select(Wrap).ToArray());
-            case StarElems { Source: string src }:
-                return new StarElems(new StarUtf16(src));
+            case StarElems { Source: string src } elems:
+                return new StarElems(new StarUtf16(src), elems.Ords, elems.Codepoints);
             default:
                 return v;
         }
