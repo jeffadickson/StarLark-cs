@@ -14,7 +14,24 @@ namespace Starlark.Fuzz.Tests;
 public class FuzzTests
 {
     private static int Iterations => int.TryParse(Environment.GetEnvironmentVariable("STARLARK_FUZZ_ITERATIONS"), out var n) ? n : 2000;
-    private static int BaseSeed => int.TryParse(Environment.GetEnvironmentVariable("STARLARK_FUZZ_SEED"), out var n) ? n : 1;
+    /// <summary>
+    /// The first seed. An unset variable means 1, but a value that is set and unusable is an error: silently falling back to
+    /// seed 1 once made a six-hour soak re-run the same inputs for a third of its rounds without anyone noticing.
+    /// </summary>
+    private static int BaseSeed
+    {
+        get
+        {
+            var text = Environment.GetEnvironmentVariable("STARLARK_FUZZ_SEED");
+            if (string.IsNullOrEmpty(text)) return 1;
+            if (!int.TryParse(text, out var n) || n < 0 || n > int.MaxValue - Iterations)
+            {
+                throw new InvalidOperationException(
+                    $"STARLARK_FUZZ_SEED={text} is unusable: it must be an int, and the seed plus the {Iterations} iterations must fit in an int");
+            }
+            return n;
+        }
+    }
 
     private static string Corpus => Path.Combine(AppContext.BaseDirectory, "Testcases");
 

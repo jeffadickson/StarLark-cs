@@ -41,6 +41,8 @@ Log($"soak started; deadline {deadline:yyyy-MM-dd HH:mm}; {opt.Workers} worker(s
 var gate = new object();
 int faultStreak = 0;   // consecutive rounds that died instantly with no output; see RunRound
 long nextSeed = state.NextSeed;
+const long SeedBlock = 1_000_000;
+int lap = 0;
 var peakMemory = 0L;
 var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); Log("stop requested; finishing current rounds"); };
@@ -64,8 +66,17 @@ var workers = Enumerable.Range(0, opt.Workers).Select(w => Task.Run(() =>
         long seed;
         lock (gate)
         {
+            // Each round owns a block of seeds, so rounds never repeat each other. The test code reads the seed as a 32-bit int
+            // and falls back to seed 1 for anything larger, so a block must fit entirely below int.MaxValue; when the blocks
+            // run out, start again from 1 with a stride that is not a divisor of the first (so the blocks differ).
+            if (nextSeed + SeedBlock + opt.Iterations > int.MaxValue)
+            {
+                lap++;
+                nextSeed = 1 + lap * 7_919;
+                Log($"seed space used up; starting lap {lap + 1} from seed {nextSeed}");
+            }
             seed = nextSeed;
-            nextSeed += 1_000_000;   // each round owns a seed block, so rounds never repeat each other
+            nextSeed += SeedBlock;
         }
         RunRound(seed, w);
     }
