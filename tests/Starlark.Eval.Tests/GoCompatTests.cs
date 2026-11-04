@@ -610,3 +610,73 @@ public class ComprehensionConditionTests
     public void ADictComprehensionTakesTheSameConditions() =>
         Assert.Equal("{1: 1}", R("{x: x for x in [1] if lambda: 0}"));
 }
+
+/// <summary><c>x[a, b] = v</c>: Go stores the key (a, b); Rust rejects the statement. This library follows Go.</summary>
+public class TupleIndexAssignmentTests
+{
+    private static Interpreter New() => new() { Dialect = Dialect.Standard with { EnableTopLevelStmt = true }, MaxSteps = 1_000_000 };
+
+    private static string R(string program) => Repr.Of(New().Execute("t.star", program).Globals["r"]);
+
+    [Fact]
+    public void AssigningStoresTheTupleKey() =>
+        Assert.Equal("{(1, 2): 3}", R("d = {}\nd[1, 2] = 3\nr = d\n"));
+
+    [Fact]
+    public void ReadingTheSameKeyWorksBothWays() =>
+        Assert.Equal("[3, 3]", R("d = {}\nd[1, 2] = 3\nr = [d[1, 2], d[(1, 2)]]\n"));
+
+    [Fact]
+    public void ThePairIsAnOrdinaryTupleKey() =>
+        Assert.Equal("[(1, 2), True]", R("d = {}\nd[1, 2] = 3\nr = [d.keys()[0], (1, 2) in d]\n"));
+
+    [Fact]
+    public void AugmentedAssignmentUsesTheTupleKey() =>
+        Assert.Equal("{(1, 2): 10}", R("d = {(1, 2): 4}\nd[1, 2] += 6\nr = d\n"));
+
+    [Fact]
+    public void KeysAreEvaluatedOnce()
+    {
+        var it = New();
+        int calls = 0;
+        it.Define("tick", (_, _, _) => { calls++; return new System.Numerics.BigInteger(calls); });
+        var m = it.Execute("t.star", "d = {}\nd[tick(), 7] = 1\nr = d\n");
+        Assert.Equal("{(1, 7): 1}", Repr.Of(m.Globals["r"]));
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public void ListsStillTakeOnlyIntegerIndexes()
+    {
+        var e = Assert.Throws<StarlarkException>(() => New().Execute("t.star", "l = [1, 2]\nl[0, 1] = 3\n"));
+        Assert.Matches("not supported on types 'list' and 'tuple'", e.RawMessage);
+    }
+
+    [Fact]
+    public void AnUnhashableElementIsAnError()
+    {
+        var e = Assert.Throws<StarlarkException>(() => New().Execute("t.star", "d = {}\nd[1, []] = 3\n"));
+        Assert.Matches("unhashable|not hashable", e.RawMessage);
+    }
+
+    [Fact]
+    public void AFrozenDictRefusesIt()
+    {
+        // A module's globals are frozen once it has run, so a function it exported cannot add to its own dict afterwards.
+        var it = New();
+        var m = it.Execute("t.star", "d = {}\ndef add():\n    d[3, 4] = 5\n");
+        var e = Assert.Throws<StarlarkException>(() => it.CallValue(m.Globals["add"], []));
+        Assert.Matches("frozen|Immutable", e.RawMessage);
+    }
+
+    [Fact]
+    public void ThreeOrMoreElementsAreStillNotAnIndex()
+    {
+        // The grammar has a two-element subscript only; a longer one is a parse error whether read or written.
+        Assert.Throws<StarlarkSyntaxException>(() => New().Execute("t.star", "d = {}\nd[1, 2, 3] = 4\n"));
+    }
+
+    [Fact]
+    public void NonIndexTargetsAreStillRejected() =>
+        Assert.Throws<StarlarkSyntaxException>(() => New().Execute("t.star", "f()[1, 2].x = 3\n[1][0, 1] += 1\n(1 + 2) = 3\n"));
+}

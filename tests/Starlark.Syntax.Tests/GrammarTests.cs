@@ -236,7 +236,10 @@ public class GrammarTests
     public void TestListInIndexExpr()
     {
         Assert.Equal("x[1, 2]\n", Parse("x[1, 2]"));
-        ParseFails("list_in_index_expr", "x[1, 2] = 3");
+        // Rust rejects assigning to x[1, 2]; Go (and so this library) accepts it and stores the tuple key. The target prints as the
+        // explicit tuple, which parses back to the same thing.
+        Assert.Equal("x[(1, 2)] = 3\n", Parse("x[1, 2] = 3"));
+        Assert.Equal("x[(1, 2)] = 3\n", Parse("x[(1, 2)] = 3"));
     }
 
     [Fact]

@@ -27,6 +27,9 @@ internal static class GrammarUtil
                 return new DotTarget(d.Target, d.Field, x.Span);
             case IndexExpr i:
                 return new IndexTarget(i.Target, i.Index, x.Span);
+            case Index2Expr i2:
+                // `x[a, b] = v` stores under the tuple key (a, b), as Starlark-Go does. (Rust rejects it; see docs/DEVIATIONS.md.)
+                return new IndexTarget(i2.Target, new TupleExpr([i2.First, i2.Second], i2.First.Span.Merge(i2.Second.Span)), x.Span);
             case IdentExpr id:
                 return new IdentTarget(new AssignIdent(id.Name, id.Span), x.Span);
             default:

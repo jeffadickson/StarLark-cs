@@ -15,9 +15,10 @@ This port follows the Starlark spec and the starlark-rust behaviour. Where it di
   `codepoint_ords()`, `elem_ords()`, the `module` type (`json` and `typing` are modules), `json.encode_indent`, positional-only
   `dict.get`, `pop` and `setdefault`, and `ScriptThread` (Go's `Thread`) are all provided. Still different: `assert` is a
   reserved word here (Go allows it), a tab is not accepted as indentation (Go accepts it), `while` is not supported, error
-  `x[1, 2] = 3` (assigning to a tuple-indexed element) is a parse error here as in Rust, while Go accepts it and stores the key
-  `(1, 2)`; reading `x[1, 2]` works in both. Our Rust-derived tests pin the rejection, so changing it is a decision, not a fix.
-  A lambda is accepted as a comprehension condition (`[x for x in y if lambda: 0]`), as in Go. Error
+  `x[1, 2] = 3` (assigning to a tuple-indexed element) follows Go: it stores the key `(1, 2)`, and `x[1, 2] += 1` works too.
+  **This differs from Rust**, which reports "left-hand-side of assignment must take the form `a`, `a.b` or `a[b]`"; the shared
+  conformance chunk `go/dict.star:89` and a grammar test were changed to expect Go's behaviour. A subscript with three or more
+  elements is still a syntax error. A lambda is accepted as a comprehension condition (`[x for x in y if lambda: 0]`), as in Go. Error
   messages are worded differently in many places (the same difference as from the Rust and Java suites), and `bytes` has none of
   the string-like methods. A string cut inside a UTF-8 character cannot exist here (slicing it is an error), so Go's
   `ord("Й"[1:]) == 0xFFFD` has no equivalent; a lone UTF-16 surrogate reads as U+FFFD.
