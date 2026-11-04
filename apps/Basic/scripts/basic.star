@@ -133,7 +133,8 @@ def build_data(st):
         toks = get_toks(st, line)[0]
         for k in range(len(toks) - 1):
             if toks[k] == ("k", "DATA") and toks[k + 1][0] == "s":
-                items.extend(split_fields(toks[k + 1][1]))
+                for f in split_fields(toks[k + 1][1]):
+                    items.append((f[0], f[1], line))   # remember the DATA line, which is where a bad item is reported
     st["data"] = items
     st["dptr"] = 0
 
@@ -145,12 +146,16 @@ def split_fields(text):
     in_quotes = False
     for ch in text.elems():
         if ch == "\"":
+            if not quoted:
+                cur = ""    # spaces before the opening quote are not part of the text
             in_quotes = not in_quotes
             quoted = True
         elif ch == "," and not in_quotes:
             fields.append((cur if quoted else cur.strip(), quoted))
             cur = ""
             quoted = False
+        elif quoted and not in_quotes:
+            pass            # after the closing quote, up to the comma, is ignored
         else:
             cur += ch
     fields.append((cur if quoted else cur.strip(), quoted))
@@ -159,7 +164,7 @@ def split_fields(text):
 # ---------------------------------------------------------------- errors
 
 def handle_error(st, code):
-    line = st["line"]
+    line = st.pop("errat", st["line"])   # a bad DATA item names its own line
     st["errcode"] = ERRORS.index(code) * 2 if code in ERRORS else 40
     st["errline"] = line
     if st["onerr"] != 0 and not st["inerr"] and line != 0:
@@ -676,6 +681,7 @@ def st_read(st, toks, pos):
         else:
             r = parse_number_text(item[0]) if not item[1] else (False, 0)
             if not r[0]:
+                st["errat"] = item[2]   # Level II blames the DATA line, not the READ
                 return "SN"
             v = r[1]
         err = assign(st, t[0], t[1], v)

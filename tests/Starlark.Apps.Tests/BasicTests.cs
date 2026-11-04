@@ -575,3 +575,53 @@ public class BasicNonAsciiTests
         Assert.True(tried > 1500);
     }
 }
+
+/// <summary>DATA, READ and RESTORE: field splitting, quoting, blanks, and where errors are blamed.</summary>
+public class BasicDataTests
+{
+    private static string Run(string program)
+    {
+        var m = new Basic.Machine();
+        m.TakeOutput();
+        m.Load(program);
+        m.Enter("RUN");
+        var text = m.TakeOutput().Replace("\r", "");
+        return text.StartsWith("RUN\n") ? text[4..] : text;
+    }
+
+    [Fact]
+    public void FieldsMayBeNumbersQuotedTextBareWordsAndBlanks()
+    {
+        var text = Run("10 DATA 1,2.5,\"A,B\",HELLO, 7 ,,\"\"\n20 READ A,B,C$,D$,E,F,G$\n30 PRINT A;B;C$;D$;E;F;\"[\";G$;\"]\"\n");
+        Assert.Contains(" 1  2.5 A,BHELLO 7  0 []", text);
+    }
+
+    [Fact]
+    public void RestoreStartsAgainAndDataLinesRunOnInOrder()
+    {
+        var text = Run("10 DATA 1,2\n20 DATA 3\n30 READ A,B,C:PRINT A;B;C\n40 RESTORE:READ X:PRINT X\n");
+        Assert.Contains(" 1  2  3 \n 1 ", text);
+    }
+
+    [Fact]
+    public void ReadingPastTheEndIsOutOfData() => Assert.Contains("?OD ERROR IN 20", Run("10 DATA 1\n20 READ A,B\n"));
+
+    [Fact]
+    public void ANonNumberReadIntoANumberIsBlamedOnTheDataLine()
+    {
+        Assert.Contains("?SN ERROR IN 10", Run("10 DATA ABC\n20 READ N\n"));
+        Assert.Contains("?SN ERROR IN 30", Run("10 REM\n20 READ A\n30 DATA 1\n40 DATA X\n".Replace("30 DATA 1\n40 DATA X", "30 DATA X")));
+    }
+
+    [Fact]
+    public void TextAfterAClosingQuoteIsIgnoredAndSpacesBeforeAnOpeningQuoteAreNotText()
+    {
+        Assert.Contains("[AB]", Run("10 DATA   \"AB\"  junk\n20 READ A$:PRINT \"[\";A$;\"]\"\n"));
+    }
+
+    [Fact]
+    public void ADataStatementIsSkippedWhenExecuted() => Assert.Contains("DONE", Run("10 DATA 1,2\n20 PRINT \"DONE\"\n"));
+
+    [Fact]
+    public void ColonAfterDataEndsIt() => Assert.Contains(" 5 ", Run("10 DATA 5:READ A:PRINT A\n"));
+}
