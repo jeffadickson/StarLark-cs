@@ -60,6 +60,12 @@ public sealed class Machine
     /// <summary>The 16 lines of the 64-column screen, with trailing spaces removed.</summary>
     public IReadOnlyList<string> Screen() => ((StarList)Call("get_screen", _state)!).Items.Select(x => (string)x!).ToList();
 
+    /// <summary>Whether the EDIT command has the keyboard, so the next input is single keys and not a line.</summary>
+    public bool Editing => (bool)Call("editing", _state)!;
+
+    /// <summary>Gives the line editor one key: a one-character string, or "\r" for Enter, "\x1b" for Escape, "\b" for Backspace.</summary>
+    public void Key(string key) => Call("edit_key", _state, key);
+
     /// <summary>Puts the machine back at the READY prompt after a fault in the interpreter script, keeping the program in memory.</summary>
     public string Recover() => (string)Call("recover", _state)!;
 
@@ -125,6 +131,35 @@ public static class Program
         return Run(Console.Out, Console.In, source, interactive: !Console.IsInputRedirected);
     }
 
+    /// <summary>The name the editor uses for a key: Enter is "\r", Escape "\x1b", Backspace "\b", anything else is the character itself.</summary>
+    private static string KeyName(int c) => c switch
+    {
+        '\n' or '\r' => "\r",
+        27 => "\x1b",
+        8 or 127 => "\b",
+        _ => char.IsHighSurrogate((char)c) ? ((char)c).ToString() : char.ConvertFromUtf32(c),
+    };
+
+    /// <summary>One key from a terminal, without echo and without waiting for Enter. Falls back to the text reader if the console cannot.</summary>
+    private static int ReadKey(TextReader fallback)
+    {
+        try
+        {
+            var k = Console.ReadKey(intercept: true);
+            return k.Key switch
+            {
+                ConsoleKey.Enter => '\r',
+                ConsoleKey.Escape => 27,
+                ConsoleKey.Backspace => 8,
+                _ => k.KeyChar == '\0' ? ' ' : k.KeyChar,
+            };
+        }
+        catch (InvalidOperationException)
+        {
+            return fallback.Read();
+        }
+    }
+
     /// <summary>Runs a machine against <paramref name="input"/>; if <paramref name="source"/> is given it is loaded and RUN first.</summary>
     public static int Run(TextWriter output, TextReader input, string? source, bool interactive = false)
     {
@@ -165,6 +200,17 @@ public static class Program
             }
             for (;;)
             {
+                if (machine.Editing)
+                {
+                    // The line editor reacts to each key as it is pressed, so on a terminal read single keys without waiting for Enter.
+                    // Piped input has no keystrokes: each character is a key, and the end of the line is Enter.
+                    int c = interactive ? ReadKey(input) : input.Read();
+                    if (c < 0) break;
+                    machine.Key(KeyName(c));
+                    output.Write(machine.TakeOutput());
+                    output.Flush();
+                    continue;
+                }
                 var line = input.ReadLine();
                 if (line is null) break;
                 Interlocked.Exchange(ref breakRequested, 0);

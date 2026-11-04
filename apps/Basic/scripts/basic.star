@@ -18,6 +18,7 @@
 
 load("numbers.star", "INT_MAX", "INT_MIN", "floor_int", "to_float", "kind_of", "span_digits", "parse_number_text", "print_text")
 load("lex.star", "tokenize")
+load("editor.star", "new_edit", "edit_step", "edit_text", "edit_head")
 load("expr.star", "eval_at", "compile_expr", "var_key", "key_kind", "zero_of", "coerce", "locate", "new_array", "binop")
 load("screen.star", "new_screen", "put_text", "newline", "clear_screen", "set_cursor", "set_pixel", "screen_lines",
      "format_using", "COLUMNS", "CELLS", "VIDEO_BASE")
@@ -55,7 +56,7 @@ def new_state():
         "data": [], "dptr": 0,
         "screen": new_screen(), "cur": 0, "col": 0, "out": [], "quiet": False, "echo": True,
         "mem": {}, "inkey": [], "seed": 12345, "trace": False,
-        "onerr": 0, "inerr": False, "errline": 0, "errcode": 0, "resume": (0, 0), "stmt_start": (0, 0),
+        "edit": None, "onerr": 0, "inerr": False, "errline": 0, "errcode": 0, "resume": (0, 0), "stmt_start": (0, 0),
         "steps": 0,
     }
     put_text(st, "RADIO SHACK LEVEL II BASIC\n\n")
@@ -74,6 +75,12 @@ def ready(st):
     if st["col"] != 0:
         newline(st)
     put_text(st, "READY\n>")
+
+# Just the ">" prompt on a new line, with no READY: shown after a program line is stored and after a bare Enter.
+def prompt_again(st):
+    if st["col"] != 0:
+        newline(st)
+    put_text(st, ">")
 
 def stop(st):
     st["running"] = False
@@ -940,6 +947,49 @@ def st_run(st, toks, pos):
         start = line_number(toks, pos)
     return goto_line(st, start)
 
+# EDIT n: start editing line n. From here until the editor finishes, every key typed goes to edit_key.
+def st_edit(st, toks, pos):
+    if st["line"] != 0:
+        return "ID"     # EDIT takes over the keyboard, so it is a direct command only
+    line = line_number(toks, pos)
+    if line < 0 or not at_end(toks, pos + 1):
+        return "SN"
+    if line not in st["program"]:
+        return "UL"
+    st["edit"] = new_edit(line, display_text(st["program"][line]))
+    put_text(st, "%d " % line)
+    st["running"] = False
+    return ""
+
+# One key for the line editor. Returns "edit" while the editor is still open, otherwise "done".
+def edit_key(st, key):
+    e = st["edit"]
+    if e == None:
+        return "done"
+    r = edit_step(e, key)
+    if r[0] != "":
+        put_text(st, r[0])
+    if r[1] == "":
+        return "edit"
+    st["edit"] = None
+    if r[1] == "save":
+        text = edit_text(e)
+        if text.strip() == "":
+            st["program"].pop(e["line"], None)
+        else:
+            st["program"][e["line"]] = text
+        st["tokcache"].pop(e["line"], None)
+        st["rpn"] = {}
+        st["dirty"] = True
+        st["cont"] = None
+    put_text(st, "\n")
+    prompt_again(st)
+    return "done"
+
+# Whether the editor has the keyboard.
+def editing(st):
+    return st["edit"] != None
+
 def st_new(st, toks, pos):
     st["program"] = {}
     st["tokcache"] = {}
@@ -1057,7 +1107,7 @@ STATEMENTS = {
     "RESET": st_reset, "POKE": st_poke, "RANDOM": st_random, "TRON": st_tron, "TROFF": st_troff, "DEF": st_def,
     "DEFINT": deftype_statement(0), "DEFSNG": deftype_statement(1), "DEFDBL": deftype_statement(2),
     "DEFSTR": deftype_statement(3), "CLEAR": st_clear, "ERROR": st_error, "RESUME": st_resume, "RUN": st_run,
-    "NEW": st_new, "CONT": st_cont, "LIST": st_list, "DELETE": st_delete, "LET": st_let,
+    "EDIT": st_edit, "NEW": st_new, "CONT": st_cont, "LIST": st_list, "DELETE": st_delete, "LET": st_let,
 }
 
 # ---------------------------------------------------------------- running
@@ -1106,6 +1156,7 @@ def enter_line(st, text):
     if st["echo"]:
         put_text(st, s + "\n")
     if s == "":
+        prompt_again(st)    # a bare Enter gets a fresh prompt, as on the real machine
         return
     k = span_digits(s, 0)
     if k > 0:
@@ -1125,6 +1176,7 @@ def enter_line(st, text):
         st["rpn"] = {}
         st["dirty"] = True
         st["cont"] = None
+        prompt_again(st)    # storing a program line shows no READY, only a new prompt
         return
     toks = tokenize(s)
     st["direct"] = toks

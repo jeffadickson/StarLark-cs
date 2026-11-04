@@ -17,7 +17,7 @@ KEYWORDS = [
     # statements
     "END", "FOR", "NEXT", "DATA", "INPUT", "DIM", "READ", "LET", "GOTO", "RUN", "IF", "RESTORE", "GOSUB", "RETURN",
     "REM", "STOP", "ELSE", "TRON", "TROFF", "DEFSTR", "DEFINT", "DEFSNG", "DEFDBL", "ERROR", "RESUME", "ON", "POKE",
-    "PRINT", "CONT", "LIST", "DELETE", "CLEAR", "NEW", "CLS", "SET", "RESET", "RANDOM", "DEF", "OUT",
+    "PRINT", "CONT", "LIST", "DELETE", "CLEAR", "NEW", "CLS", "SET", "RESET", "RANDOM", "DEF", "OUT", "EDIT",
     # words that sit inside statements
     "TAB(", "SPC(", "TO", "FN", "USING", "THEN", "NOT", "STEP", "AND", "OR",
     # functions
