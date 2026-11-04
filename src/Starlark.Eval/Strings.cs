@@ -8,11 +8,14 @@ namespace Starlark.Eval;
 /// </summary>
 public enum StringElements
 {
-    /// <summary>UTF-16 code units, as in the Java implementation. The default; maps directly onto .NET strings.</summary>
-    Utf16,
+    /// <summary>
+    /// UTF-8 bytes, as in the Go and Rust implementations. The default. Slicing inside a character is an error. This is the
+    /// zero value on purpose: a thread that is not running a script, whose thread-static mode was never set, then also reads as UTF-8.
+    /// </summary>
+    Utf8 = 0,
 
-    /// <summary>UTF-8 bytes, as in the Go and Rust implementations. Slicing inside a character is an error.</summary>
-    Utf8,
+    /// <summary>UTF-16 code units, as in the Java implementation; maps directly onto .NET strings.</summary>
+    Utf16 = 1,
 }
 
 /// <summary>Element-aware string primitives. The mode is ambient per thread, set while an interpreter runs.</summary>

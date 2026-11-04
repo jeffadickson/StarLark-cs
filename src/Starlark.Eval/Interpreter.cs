@@ -199,10 +199,10 @@ public sealed class Interpreter
     internal void RecordRun(Futures.RunStats stats) => LastRunStats = stats;
 
     /// <summary>
-    /// The unit of string length, indexing and slicing. <see cref="StringElements.Utf16"/> (default) matches .NET
-    /// strings; <see cref="StringElements.Utf8"/> matches the Go and Rust implementations, so offsets agree with them.
+    /// The unit of string length, indexing and slicing. <see cref="StringElements.Utf8"/> (default) matches the Go and Rust
+    /// implementations, so offsets agree with them; <see cref="StringElements.Utf16"/> matches Java and .NET strings.
     /// </summary>
-    public StringElements StringElements { get; set; } = StringElements.Utf16;
+    public StringElements StringElements { get; set; } = StringElements.Utf8;
 
     /// <summary>
     /// The spec makes rebinding a global a static error. Set this to allow it, as some implementations

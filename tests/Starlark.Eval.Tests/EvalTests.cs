@@ -103,19 +103,29 @@ public class EvalTests
     [InlineData("'100%%' % ()", "\"100%\"")]
     [InlineData("'ab' * 3", "\"ababab\"")]
     [InlineData("'b' in 'abc'", "True")]
-    [InlineData("len('héllo')", "5")]
+    [InlineData("len('héllo')", "6")]   // UTF-8: the é is two bytes
     [InlineData("'one\\ntwo\\n'.splitlines()", "[\"one\", \"two\"]")]
     [InlineData("'a,b,c'.rsplit(',', 1)", "[\"a,b\", \"c\"]")]
     [InlineData("'a,b,c'.split(',', 1)", "[\"a\", \"b,c\"]")]
     public void Strings(string expr, string expected) => Assert.Equal(expected, R(Eval(expr)));
 
     [Fact]
-    public void StringsAreSequencesOfUtf16Elements()
+    public void StringsAreSequencesOfUtf16ElementsWhenAsked()
     {
-        // The spec lets an implementation choose K = 8 or K = 16; this one uses 16-bit elements (like Java).
-        Assert.Equal("1", R(Eval("len('é')")));
-        Assert.Equal("2", R(Eval("len('😀')")));
-        Assert.Equal("\"b\"", R(Eval("'a😀b'[3]")));
+        // The spec lets an implementation choose K = 8 or K = 16. The default is 8-bit (UTF-8, like Go and Rust); this checks the
+        // 16-bit choice (like Java) still works.
+        var it = new Interpreter { StringElements = StringElements.Utf16 };
+        Assert.Equal("1", Repr.Of(it.Eval("len('é')")));
+        Assert.Equal("2", Repr.Of(it.Eval("len('😀')")));
+        Assert.Equal("\"b\"", Repr.Of(it.Eval("'a😀b'[3]")));
+    }
+
+    [Fact]
+    public void StringsAreSequencesOfUtf8ElementsByDefault()
+    {
+        Assert.Equal("2", R(Eval("len('é')")));
+        Assert.Equal("4", R(Eval("len('😀')")));
+        Assert.Equal("\"b\"", R(Eval("'a😀b'[5]")));
     }
 
     [Fact]

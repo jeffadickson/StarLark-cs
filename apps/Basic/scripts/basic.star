@@ -1135,6 +1135,11 @@ def submit(st, text, budget):
         enter_line(st, text)
     return run(st, budget)
 
+# Whether typed lines are echoed into the output. A terminal shows what the user types by itself, so a terminal host turns this off;
+# a test or a pipe has no echo of its own, so it stays on.
+def set_echo(st, on):
+    st["echo"] = on
+
 # Queue keys for INKEY$.
 def press_keys(st, keys):
     for ch in keys.elems():

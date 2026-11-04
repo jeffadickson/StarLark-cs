@@ -4,8 +4,11 @@ This port follows the Starlark spec and the starlark-rust behaviour. Where it di
 
 ## Behaviour
 
-- **String elements default to UTF-16.** `len("😀")` is 2. The spec allows 8-bit or 16-bit elements. Set
-  `Interpreter.StringElements = StringElements.Utf8` for Go/Rust-compatible offsets, or use the separate `utf16` type.
+- **String elements default to UTF-8 bytes**, as in Go and Rust: `len("😀")` is 4, and `len("é")` is 2. The spec allows 8-bit or
+  16-bit elements. Slicing or indexing inside a multi-byte character is an error. Set
+  `Interpreter.StringElements = StringElements.Utf16` for Java-compatible, .NET-native offsets (`len("😀")` is 2), or use the
+  separate `utf16` type for one string at a time. **This default changed from UTF-16** on 2026-11-04; a host that relied on the
+  old default must now set `Utf16` explicitly.
 - **`dict.update(None)` is an error**, rather than a no-op.
 - **Negative indexes work with `list.pop`** (`xs.pop(-1)`), as in Python and the reference implementations.
 - **Recursion is an error**, per the spec, and call depth is also capped at 150. Set `Dialect.EnableRecursion` to allow it, as

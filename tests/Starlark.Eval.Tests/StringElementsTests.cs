@@ -14,7 +14,16 @@ public class StringElementsTests
     private static string U8(string expr) => Eval(StringElements.Utf8, expr);
 
     [Fact]
-    public void DefaultIsUtf16() => Assert.Equal(StringElements.Utf16, new Interpreter().StringElements);
+    public void DefaultIsUtf8() => Assert.Equal(StringElements.Utf8, new Interpreter().StringElements);
+
+    [Fact]
+    public void AnInterpreterWithNoSettingMatchesGoAndRust()
+    {
+        // The default is the one Go and Rust use, so offsets agree with theirs.
+        var it = new Interpreter();
+        Assert.Equal("6", Repr.Of(it.Eval("len('世界')")));
+        Assert.Equal("4", Repr.Of(it.Eval("len('😀')")));
+    }
 
     [Theory]
     [InlineData("len('abc')", "3", "3")]
@@ -119,8 +128,8 @@ public class StringElementsTests
     [Fact]
     public void ModeIsRestoredAfterEachCall()
     {
-        var utf8 = new Interpreter { StringElements = StringElements.Utf8 };
-        var utf16 = new Interpreter();
+        var utf8 = new Interpreter();
+        var utf16 = new Interpreter { StringElements = StringElements.Utf16 };
         Assert.Equal("6", Repr.Of(utf8.Eval("len('世界')")));
         Assert.Equal("2", Repr.Of(utf16.Eval("len('世界')")));
         Assert.Equal("6", Repr.Of(utf8.Eval("len('世界')")));

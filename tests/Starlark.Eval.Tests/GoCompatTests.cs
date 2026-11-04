@@ -141,7 +141,11 @@ public class GoCompatTests
     public void ALoneSurrogateReadsAsTheReplacementCharacter()
     {
         // A string holding half of a surrogate pair cannot be written as a literal, so build one by slicing in UTF-16 mode.
-        Assert.Equal("[97, 65533, 90]", R("list((\"a\" + \"😿\"[1:] + \"Z\").codepoint_ords())"));
+        // In UTF-8 mode (the default) such a slice is an error instead, so this runs in UTF-16 mode.
+        var it = New();
+        it.StringElements = StringElements.Utf16;
+        var m = it.Execute("t.star", "r = list((\"a\" + \"😿\"[1:] + \"Z\").codepoint_ords())\n");
+        Assert.Equal("[97, 65533, 90]", Repr.Of(m.Globals["r"]));
     }
 
     [Fact]

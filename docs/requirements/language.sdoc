@@ -147,8 +147,8 @@ UID: LANG-VAL-005
 STATUS: Implemented
 TITLE: String element size
 STATEMENT: >>>
-String length, indexing and slicing shall use UTF-16 code units by default and UTF-8 bytes when selected by the host.
-A separate utf16 type shall be available as an extension.
+String length, indexing and slicing shall use UTF-8 bytes by default, as Go and Rust do, and UTF-16 code units when selected by
+the host. A separate utf16 type shall be available as an extension.
 <<<
 VERIFICATION: Utf16TypeTests, StringElements tests
 

@@ -57,6 +57,15 @@ public sealed class Machine
     /// <summary>The 16 lines of the 64-column screen, with trailing spaces removed.</summary>
     public IReadOnlyList<string> Screen() => ((StarList)Call("get_screen", _state)!).Items.Select(x => (string)x!).ToList();
 
+    /// <summary>
+    /// Whether typed lines are echoed into the output. On by default, which suits tests and pipes; a real terminal echoes by itself,
+    /// so an interactive host sets this to false.
+    /// </summary>
+    public bool Echo
+    {
+        set => Call("set_echo", _state, value);
+    }
+
     /// <summary>Queues keys for INKEY$.</summary>
     public void PressKeys(string keys) => Call("press_keys", _state, keys);
 
@@ -103,31 +112,63 @@ public static class Program
         {
             source = File.ReadAllText(args[0]);
         }
-        return Run(Console.Out, Console.In, source);
+        Console.OutputEncoding = System.Text.Encoding.UTF8;
+        // On a terminal the user sees what they type, so the machine must not echo it again; Ctrl+C is BREAK.
+        return Run(Console.Out, Console.In, source, interactive: !Console.IsInputRedirected);
     }
 
     /// <summary>Runs a machine against <paramref name="input"/>; if <paramref name="source"/> is given it is loaded and RUN first.</summary>
-    public static int Run(TextWriter output, TextReader input, string? source)
+    public static int Run(TextWriter output, TextReader input, string? source, bool interactive = false)
     {
-        var machine = new Machine();
+        var machine = new Machine { Echo = !interactive };
         output.Write(machine.TakeOutput());
-        string status = "done";
-        if (source is not null)
+        output.Flush();
+
+        // Ctrl+C is the BREAK key. It arrives on another thread, and the machine is not thread-safe, so it only sets a flag that
+        // the loop below checks between slices of the program.
+        int breakRequested = 0;
+        ConsoleCancelEventHandler onCancel = (_, e) =>
         {
-            machine.Load(source);
-            status = machine.Enter("RUN");
-            output.Write(machine.TakeOutput());
-        }
-        for (;;)
+            e.Cancel = true;
+            Interlocked.Exchange(ref breakRequested, 1);
+        };
+        if (interactive) Console.CancelKeyPress += onCancel;
+        try
         {
-            if (status == "waiting" || status == "done")
+            string status = "done";
+            string Drive(string status)
+            {
+                while (status == "budget")
+                {
+                    if (Interlocked.Exchange(ref breakRequested, 0) == 1) machine.Break();
+                    status = machine.Continue();
+                    output.Write(machine.TakeOutput());
+                    output.Flush();
+                }
+                return status;
+            }
+
+            if (source is not null)
+            {
+                machine.Load(source);
+                status = Drive(machine.Type("RUN"));
+                output.Write(machine.TakeOutput());
+                output.Flush();
+            }
+            for (;;)
             {
                 var line = input.ReadLine();
                 if (line is null) break;
-                status = machine.Enter(line);
+                Interlocked.Exchange(ref breakRequested, 0);
+                status = Drive(machine.Type(line));
                 output.Write(machine.TakeOutput());
+                output.Flush();
             }
+            return 0;
         }
-        return 0;
+        finally
+        {
+            if (interactive) Console.CancelKeyPress -= onCancel;
+        }
     }
 }
