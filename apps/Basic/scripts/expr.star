@@ -697,6 +697,9 @@ def call_function(st, name, args):
     if name == "POINT":
         if n != 2:
             return (None, "SN")
+        # A string for either coordinate is a type mismatch (without this check to_float would fail on it).
+        if need_string(args[0]) or need_string(args[1]):
+            return (None, "TM")
         x = floor_int(to_float(args[0]))
         y = floor_int(to_float(args[1]))
         if x < 0 or x > 127 or y < 0 or y > 47:
