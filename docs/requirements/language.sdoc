@@ -248,7 +248,7 @@ STATEMENT: >>>
 A bundled Starlark package, load("std/approx_math.star", ...), shall provide sin, cos, exp, log (natural, or to a base), log2
 and atan, computed in Starlark from series and argument reduction, accurate to within a few units in the last place and
 following the C library for special values (log(0) is -inf, log of a negative is nan, no errors). The host shall also predeclare
-_sin, _cos, _exp, _log, _log2 and _atan, backed by System.Math, whose leading underscore marks them as internal. Names the
+sin, cos, exp, log, log2 and atan, backed by System.Math, with the same names as the package. Names the
 package starts with an underscore shall not be loadable.
 <<<
 VERIFICATION: ApproxMathTests

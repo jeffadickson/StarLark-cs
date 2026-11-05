@@ -6,9 +6,9 @@
 # comparisons. The results agree with a C library to within a few units in the last place (about 1e-15 relative error),
 # and they behave the same on every host, because no platform math library is involved.
 #
-# Names that start with an underscore are internal helpers. Starlark does not let `load` export them, and the host's own
-# fast versions of these functions (written in C# on top of System.Math) are also named with a leading underscore:
-# _sin, _cos, _exp, _log, _log2 and _atan.
+# Names that start with an underscore are internal helpers. Starlark does not let `load` export them. The host also
+# predeclares fast versions of these functions with the same names (written in C# on top of System.Math); loading a
+# name from this package replaces the predeclared one in the loading file.
 #
 # Special values follow the C and Go libraries, not Python's: log(0) is -inf, log of a negative number is nan, exp overflows
 # to inf, and sin(inf) is nan; none of them is an error. A wrong argument type is an error.

@@ -3,13 +3,13 @@ using System.Numerics;
 namespace Starlark.Eval;
 
 /// <summary>
-/// The fast elementary functions, backed by <see cref="Math"/>: <c>_sin</c>, <c>_cos</c>, <c>_exp</c>, <c>_log</c>,
-/// <c>_log2</c> and <c>_atan</c>. The leading underscore marks them as internal: they are the host's own implementation, meant
-/// to be called by library code (the pure Starlark package <c>std/approx_math.star</c> exports the public names), not by ordinary scripts.
+/// The fast elementary functions, backed by <see cref="Math"/>: <c>sin</c>, <c>cos</c>, <c>exp</c>, <c>log</c>,
+/// <c>log2</c> and <c>atan</c>. They are the host's fast implementation; the pure Starlark package <c>std/approx_math.star</c> offers the same names
+/// as a portable alternative that a script loads explicitly (a loaded name hides the predeclared one).
 /// </summary>
 /// <remarks>
-/// They follow the C and Go math libraries rather than Python's: <c>_log(0)</c> is <c>-inf</c>, the log of a negative number
-/// and <c>_sin(inf)</c> are <c>nan</c>, and <c>_exp</c> overflows to <c>inf</c>. None of those is an error. A value that is not an
+/// They follow the C and Go math libraries rather than Python's: <c>log(0)</c> is <c>-inf</c>, the log of a negative number
+/// and <c>sin(inf)</c> are <c>nan</c>, and <c>exp</c> overflows to <c>inf</c>. None of those is an error. A value that is not an
 /// int or a float is an error, and so is an int too large for a float.
 /// </remarks>
 public static class InternalMath
@@ -17,22 +17,22 @@ public static class InternalMath
     /// <summary>Predeclares the six functions in <paramref name="universe"/>.</summary>
     public static void Install(Dictionary<string, object?> universe)
     {
-        Unary(universe, "_sin", Math.Sin);
-        Unary(universe, "_cos", Math.Cos);
-        Unary(universe, "_exp", Math.Exp);
-        Unary(universe, "_log2", Math.Log2);
-        Unary(universe, "_atan", Math.Atan);
+        Unary(universe, "sin", Math.Sin);
+        Unary(universe, "cos", Math.Cos);
+        Unary(universe, "exp", Math.Exp);
+        Unary(universe, "log2", Math.Log2);
+        Unary(universe, "atan", Math.Atan);
 
-        // _log(x) is the natural logarithm; _log(x, base) is log(x) / log(base), and base 1 is a division by zero as in Go.
-        universe["_log"] = new Builtin("_log", (_, args, kwargs) =>
+        // log(x) is the natural logarithm; log(x, base) is log(x) / log(base), and base 1 is a division by zero as in Go.
+        universe["log"] = new Builtin("log", (_, args, kwargs) =>
         {
-            var r = new ArgReader("_log", args, kwargs);
+            var r = new ArgReader("log", args, kwargs);
             double x = Number("x", r.Required("x"));
             double result;
             if (r.Has("base"))
             {
                 double b = Number("base", r.Required("base"));
-                if (b == 1.0) throw new StarlarkException("_log: division by zero");
+                if (b == 1.0) throw new StarlarkException("log: division by zero");
                 result = Math.Log(x) / Math.Log(b);
             }
             else

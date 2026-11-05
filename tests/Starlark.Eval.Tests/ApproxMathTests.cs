@@ -5,7 +5,7 @@ namespace Starlark.Eval.Tests;
 
 /// <summary>
 /// The pure Starlark package <c>std/approx_math.star</c> (sin, cos, exp, log, log2, atan) and the host's internal
-/// <c>_sin</c> ... <c>_atan</c> built on <see cref="Math"/>. The package is checked against <see cref="Math"/> over many inputs.
+/// <c>sin</c> ... <c>atan</c> built on <see cref="Math"/>. The package is checked against <see cref="Math"/> over many inputs.
 /// </summary>
 public class ApproxMathTests
 {
@@ -211,43 +211,43 @@ public class ApproxMathTests
         Assert.Empty(result.Errors);
     }
 
-    // ---------------------------------------------------------------- the host's own _sin ... _atan
+    // ---------------------------------------------------------------- the host's own sin ... atan
 
     private static object? Internal(string body) => New().Execute("t.star", body).Globals["r"];
 
     [Fact]
     public void InternalFunctionsMatchMathExactly()
     {
-        Assert.Equal(Math.Sin(0.5), Internal("r = _sin(0.5)\n"));
-        Assert.Equal(Math.Cos(0.5), Internal("r = _cos(0.5)\n"));
-        Assert.Equal(Math.Exp(1.5), Internal("r = _exp(1.5)\n"));
-        Assert.Equal(Math.Log(7.0), Internal("r = _log(7.0)\n"));
-        Assert.Equal(Math.Log2(7.0), Internal("r = _log2(7.0)\n"));
-        Assert.Equal(Math.Atan(0.25), Internal("r = _atan(0.25)\n"));
-        Assert.Equal(Math.Log(100.0) / Math.Log(10.0), Internal("r = _log(100, 10)\n"));
+        Assert.Equal(Math.Sin(0.5), Internal("r = sin(0.5)\n"));
+        Assert.Equal(Math.Cos(0.5), Internal("r = cos(0.5)\n"));
+        Assert.Equal(Math.Exp(1.5), Internal("r = exp(1.5)\n"));
+        Assert.Equal(Math.Log(7.0), Internal("r = log(7.0)\n"));
+        Assert.Equal(Math.Log2(7.0), Internal("r = log2(7.0)\n"));
+        Assert.Equal(Math.Atan(0.25), Internal("r = atan(0.25)\n"));
+        Assert.Equal(Math.Log(100.0) / Math.Log(10.0), Internal("r = log(100, 10)\n"));
     }
 
     [Fact]
     public void InternalFunctionsAcceptIntegers()
     {
-        Assert.Equal(Math.Sin(2), Internal("r = _sin(2)\n"));
-        Assert.Equal(Math.Exp(3), Internal("r = _exp(3)\n"));
+        Assert.Equal(Math.Sin(2), Internal("r = sin(2)\n"));
+        Assert.Equal(Math.Exp(3), Internal("r = exp(3)\n"));
     }
 
     [Fact]
     public void InternalFunctionsReturnSpecialValuesNotErrors()
     {
-        Assert.Equal(double.NegativeInfinity, Internal("r = _log(0)\n"));
-        Assert.True(double.IsNaN((double)Internal("r = _log(-1)\n")!));
-        Assert.Equal(double.PositiveInfinity, Internal("r = _exp(1000)\n"));
-        Assert.True(double.IsNaN((double)Internal("r = _sin(1.0e400 - 1.0e400)\n".Replace("1.0e400", "1e308 * 10"))!));
+        Assert.Equal(double.NegativeInfinity, Internal("r = log(0)\n"));
+        Assert.True(double.IsNaN((double)Internal("r = log(-1)\n")!));
+        Assert.Equal(double.PositiveInfinity, Internal("r = exp(1000)\n"));
+        Assert.True(double.IsNaN((double)Internal("r = sin(1.0e400 - 1.0e400)\n".Replace("1.0e400", "1e308 * 10"))!));
     }
 
     [Theory]
-    [InlineData("_sin('x')")]
-    [InlineData("_log(None)")]
-    [InlineData("_atan(True)")]
-    [InlineData("_exp([])")]
+    [InlineData("sin('x')")]
+    [InlineData("log(None)")]
+    [InlineData("atan(True)")]
+    [InlineData("exp([])")]
     public void InternalFunctionsRejectWrongTypes(string call)
     {
         var e = Assert.Throws<StarlarkException>(() => Internal("r = " + call + "\n"));
@@ -257,18 +257,18 @@ public class ApproxMathTests
     [Fact]
     public void InternalFunctionsRejectBadArguments()
     {
-        Assert.Contains("division by zero", Assert.Throws<StarlarkException>(() => Internal("r = _log(2, 1)\n")).RawMessage);
-        Assert.Throws<StarlarkException>(() => Internal("r = _sin()\n"));
-        Assert.Throws<StarlarkException>(() => Internal("r = _sin(1, 2)\n"));
-        Assert.Throws<StarlarkException>(() => Internal("r = _sin(x = 1, y = 2)\n"));
-        Assert.Contains("too large", Assert.Throws<StarlarkException>(() => Internal("r = _sin(1 << 2000)\n")).RawMessage);
+        Assert.Contains("division by zero", Assert.Throws<StarlarkException>(() => Internal("r = log(2, 1)\n")).RawMessage);
+        Assert.Throws<StarlarkException>(() => Internal("r = sin()\n"));
+        Assert.Throws<StarlarkException>(() => Internal("r = sin(1, 2)\n"));
+        Assert.Throws<StarlarkException>(() => Internal("r = sin(x = 1, y = 2)\n"));
+        Assert.Contains("too large", Assert.Throws<StarlarkException>(() => Internal("r = sin(1 << 2000)\n")).RawMessage);
     }
 
     [Fact]
     public void InternalFunctionsHaveCheckerSignatures()
     {
-        Assert.Empty(Typed().Typecheck("t.star", "def f(x: float) -> float:\n    return _sin(x) + _log(x, 2) + _atan(3)\n").Errors);
-        Assert.NotEmpty(Typed().Typecheck("t.star", "def f():\n    return _sin('x')\n").Errors);
+        Assert.Empty(Typed().Typecheck("t.star", "def f(x: float) -> float:\n    return sin(x) + log(x, 2) + atan(3)\n").Errors);
+        Assert.NotEmpty(Typed().Typecheck("t.star", "def f():\n    return sin('x')\n").Errors);
     }
 
     [Fact]
@@ -277,7 +277,7 @@ public class ApproxMathTests
         var it = New();
         var m = it.Execute("t.star", Load + "def both(f, g, x):\n    return (f(x), g(x))\n");
         foreach (var (pure, host, reference) in new (string, string, Func<double, double>)[]
-                 { ("sin", "_sin", Math.Sin), ("cos", "_cos", Math.Cos), ("exp", "_exp", Math.Exp), ("log2", "_log2", Math.Log2), ("atan", "_atan", Math.Atan) })
+                 { ("sin", "sin", Math.Sin), ("cos", "cos", Math.Cos), ("exp", "exp", Math.Exp), ("log2", "log2", Math.Log2), ("atan", "atan", Math.Atan) })
         {
             foreach (double x in new[] { 0.1, 0.7, 1.3, 2.9, 5.5 })
             {
