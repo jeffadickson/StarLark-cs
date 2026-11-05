@@ -150,7 +150,7 @@ STATEMENT: >>>
 String length, indexing and slicing shall use UTF-8 bytes by default, as Go and Rust do, and UTF-16 code units when selected by
 the host. A separate utf16 type shall be available as an extension.
 <<<
-VERIFICATION: Utf16TypeTests, StringElements tests
+VERIFICATION: Utf16TypeTests, StringElementsTests
 
 [/SECTION]
 
@@ -165,7 +165,7 @@ STATEMENT: >>>
 The interpreter shall execute assignment (including unpacking and augmented forms), if, for, break, continue, pass,
 return, def, lambda, load and expression statements.
 <<<
-VERIFICATION: ExampleProgramTests
+VERIFICATION: ExampleProgramTests, TupleIndexAssignmentTests
 
 [REQUIREMENT]
 UID: LANG-EXE-002
@@ -194,7 +194,7 @@ TITLE: Comprehensions
 STATEMENT: >>>
 List and dict comprehensions, including nested for and if clauses, shall execute with their own scope.
 <<<
-VERIFICATION: ExampleProgramTests (30, 37)
+VERIFICATION: ExampleProgramTests (30, 37), ComprehensionConditionTests
 
 [/SECTION]
 
@@ -220,7 +220,7 @@ STATEMENT: >>>
 All string methods of the specification shall be provided, as well as percent formatting and the format method with
 the specified conversions and errors.
 <<<
-VERIFICATION: ExampleProgramTests (11-24)
+VERIFICATION: ExampleProgramTests (11-24), ParallelSortTests
 
 [REQUIREMENT]
 UID: LANG-LIB-003
@@ -229,7 +229,7 @@ TITLE: Container methods
 STATEMENT: >>>
 The methods of list, dict and set shall be provided with the specified results and errors.
 <<<
-VERIFICATION: ExampleProgramTests (25-40, 51-56)
+VERIFICATION: ExampleProgramTests (25-40, 51-56), FormatSpecTests, FormatUnicodeTests
 
 [REQUIREMENT]
 UID: LANG-LIB-004
@@ -276,7 +276,7 @@ STATEMENT: >>>
 The implementation shall pass the Bazel, Go, Java and Rust conformance data, including the Go float and set suites,
 modulo the wording differences recorded in the harness.
 <<<
-VERIFICATION: ConformanceTests, GoSuiteTests
+VERIFICATION: ConformanceTests, GoSuiteTests, SpecExampleTests
 
 [/SECTION]
 
@@ -322,7 +322,7 @@ STATEMENT: >>>
 json.encode, json.decode and json.indent shall round-trip nested data including big integers and string escapes, and
 shall reject invalid input and cyclic structures.
 <<<
-VERIFICATION: JsonTests, ExampleProgramTests (87-90)
+VERIFICATION: JsonTests, ExampleProgramTests (87-90), JsonSurrogateTests
 
 [/SECTION]
 
@@ -337,7 +337,7 @@ STATEMENT: >>>
 The checker shall report an error only when it can prove two types cannot intersect, and shall never report an error for
 a program that runs correctly (no false positives on the conformance corpus).
 <<<
-VERIFICATION: TypeCheckerTests
+VERIFICATION: TypeCheckerTests, TypecheckLoadTests
 
 [REQUIREMENT]
 UID: LANG-CHK-002

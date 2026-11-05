@@ -46,7 +46,7 @@ element mode, memory budget, cancellation token, output buffer) in an execution 
 and to each task, and shall hold no such state in thread-static or Interpreter fields, so that a frozen module can be
 called from many threads at once.
 <<<
-VERIFICATION: FrozenModuleConcurrencyTests; ExecutionContext holds all per-run state
+VERIFICATION: FrozenModuleConcurrencyTests (many threads call one frozen module; the execution context holds all per-run state)
 
 [REQUIREMENT]
 UID: FUT-PRE-002
@@ -319,7 +319,7 @@ STATEMENT: >>>
 A property test shall show that, for generated programs, parallel_map and spawn/get give the same values, errors and
 printed output as calling the function inline, under randomized scheduling delays.
 <<<
-VERIFICATION: FuturesProperties (six FsCheck properties; a planted ordering bug was caught within 10 cases)
+VERIFICATION: FuturesProperties (six property tests; a planted ordering bug was caught within 10 cases)
 
 [REQUIREMENT]
 UID: FUT-VER-002
