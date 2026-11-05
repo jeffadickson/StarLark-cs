@@ -127,8 +127,9 @@ returns a small <code>Flow</code> value (normal, break, continue, return) instea
 already decided which names are local, so a lookup never has to search outward through scopes at run time.</p>
 <p><b>Run state lives in an explicit execution context</b> (<code>ExecutionContext.cs</code>): the step counter, deadline,
 call depth, the set of functions on the stack (for the recursion check), the string mode, the memory budget and the call
-stack for error traces. Nothing about a run is kept in the <code>Interpreter</code> object or in static fields, which is
-what lets one frozen module be called from many threads, and lets each future task carry its own copy.</p>
+stack for error traces. None of this is kept in the <code>Interpreter</code> object (which holds the configuration, the
+cache of loaded modules and the last run's statistics) or in static fields, which is what lets one frozen module be called
+from many threads, and lets each future task carry its own copy.</p>
 <p><b>Errors carry their location without cost on the happy path.</b> A runtime error is a <code>StarlarkException</code>.
 As it unwinds, an exception filter (not a catch) records the first source position it passes and each Starlark frame it
 leaves, so the trace is built during the first pass of exception handling with no rethrowing:</p>
@@ -147,9 +148,10 @@ load_all([{"age": "41"}, {"age": "forty"}])</pre>
 <h2>5. Budgets and robustness</h2>
 <p>Starlark's design keeps scripts from touching the outside world. What a script can still do is use time and memory,
 so every run can carry budgets: <code>MaxSteps</code> (abstract steps, deterministic), <code>Timeout</code> (wall clock),
-<code>MaxAllocatedBytes</code> (memory) and a <code>CancellationToken</code>. Running out raises
+<code>MaxAllocatedBytes</code> (a per-allocation memory cap: the largest single string, list, tuple or bytes one operation
+may build, not a total) and a <code>CancellationToken</code>. Running out raises
 <code>ExecutionLimitException</code>, which no script can catch. This page gives every run 20 million steps, 10 seconds and
-256 MB. Here is a script that wants a billion steps:</p>
+a 256 MB per-allocation cap. Here is a script that wants a billion steps:</p>
 <div data-expect="limit reached (steps)" class="example" data-options="">
 <pre class="code" contenteditable="true" spellcheck="false">def spin():
     total = 0
@@ -166,8 +168,8 @@ spin()</pre>
   disk.</li>
   <li>Exhaustive tests: every string up to a few characters over a small alphabet is fed to the lexer, the parser and the
   BASIC expression evaluator.</li>
-  <li>Guards on every recursive path (nesting depth, call depth, cyclic values), on huge numbers (a shift by a billion is an
-  error, not an attempt), and on memory (string and list growth is checked before it happens).</li>
+  <li>Guards on every recursive path (nesting depth, call depth, cyclic values), on huge numbers (integers are capped in
+  size), and on memory (the size of each new string, list, tuple or bytes value is checked before it is built).</li>
 </ul>
 <p>The first five-hour soak found 116 failing rounds and 6 hangs. All were fixed and each has a regression test.</p>
 </section>
@@ -348,7 +350,7 @@ checker agrees with the runtime, math functions never crash and agree across the
 <tr><td>Traceability</td><td>Every requirement in <code>docs/requirements</code> (StrictDoc) names its tests, and
 <code>tools/Trace</code> fails if one is not covered.</td></tr>
 </table>
-<p>In all, about 2,800 tests run in under ten minutes.</p>
+<p>In all, more than 2,600 tests run in under ten minutes.</p>
 </section>
 
 <section id="performance">
@@ -374,7 +376,7 @@ the sequential stable sort. The playground below reports the time and step count
   <code>Task</code> functions as futures with a cap on operations in flight.</li>
   <li><b>A static type checker</b> that understands records, enums, structs, JSON, the bundled packages and C# host
   signatures.</li>
-  <li><b>Budgets</b> for steps, time, memory and cancellation, all uncatchable by scripts.</li>
+  <li><b>Budgets</b> for steps, time and cancellation, and a per-allocation memory cap, all uncatchable by scripts.</li>
   <li><b>Typed, attribute-driven interop</b>: <code>Register</code> for functions, <code>Expose</code> with
   <code>[Expose]</code>/<code>[Hide]</code> for objects, <code>DefineValue</code> for data.</li>
   <li><b>Go's Thread API</b> as <code>ScriptThread</code>: name, steps, call stack, thread locals for host functions.</li>

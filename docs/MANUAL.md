@@ -5,8 +5,9 @@ language extensions it adds, and its limits. For how it is built inside, read th
 [implementation deep dive](site/deep-dive.html). For the places where it deliberately differs from other Starlark
 implementations, see [DEVIATIONS.md](DEVIATIONS.md).
 
-Every C# and Starlark sample in this manual is compiled and run by `tests/Starlark.Eval.Tests/ManualTests.cs`, so the
-samples cannot go out of date without a test failing.
+Each sample marked as a manual sample has a matching test in `tests/Starlark.Eval.Tests/ManualTests.cs` that repeats it
+and checks the result. The test copies the code by hand, so a change to a sample here must be made in its test too; a
+check only ensures that every marked sample has a test of the same name.
 
 ## Contents
 
@@ -87,8 +88,9 @@ int total = it.Call<int>(module, "price", 4, 25);   // 100
 
 ## 3. Embedding: the Interpreter
 
-An `Interpreter` holds configuration (the dialect, limits, the host functions) and has no state of its own between runs:
-each call to `Execute` gets a fresh execution context. A frozen module returned by `Execute` can be called from several
+An `Interpreter` holds configuration (the dialect, limits, the host functions), the cache of modules loaded with `load()`
+(see below) and the statistics of the last run (`LastRunStats`). Each call to `Execute` gets a fresh execution context:
+steps, deadline and call depth start again. A frozen module returned by `Execute` can be called from several
 threads at once; one `Interpreter` should still be configured from one thread.
 
 ### The top level
@@ -123,7 +125,9 @@ var module = it.Execute("main.star", "load('lib.star', 'double')\nresult = doubl
 // module.Globals["result"] is 42
 ```
 
-A loaded module is run once per `Execute` and cached for the rest of that run; a cycle of loads is an error.
+A loaded module is run once per `Interpreter` and cached for that interpreter's lifetime: later `Execute` calls reuse the
+first result, even if `SourceLoader` would now return different text. Create a new `Interpreter` to load fresh source. A
+load that fails is not cached, and a cycle of loads is an error.
 
 ## 4. Giving scripts host functions and objects
 
@@ -177,7 +181,7 @@ var it = new Interpreter
     Dialect = Dialect.Standard with { EnableTopLevelStmt = true },
     MaxSteps = 1_000_000,                       // abstract computation steps
     Timeout = TimeSpan.FromSeconds(2),          // wall-clock time
-    MaxAllocatedBytes = 64L * 1024 * 1024,      // memory a script may allocate
+    MaxAllocatedBytes = 64L * 1024 * 1024,      // largest single object a script may build
 };
 try
 {
@@ -188,6 +192,11 @@ catch (ExecutionLimitException e)
     // e.Limit is "steps"
 }
 ```
+
+`MaxAllocatedBytes` is a per-allocation cap, not a total: it is checked before one operation (repetition, concatenation,
+`join`) builds a string, list, tuple or bytes value larger than the limit. It does not bound the sum of all a run
+allocates, so a script can still use a lot of memory in many smaller pieces; combine it with `MaxSteps`, `Timeout` and a
+process-level memory cap.
 
 `ExecutionLimitException.Limit` names the budget that ran out (`steps`, `time`, `memory`, or a futures limit such as
 `tasks` or `host-operations`). A script cannot catch it. `Cancellation` takes a `CancellationToken` for host-driven
@@ -203,8 +212,8 @@ Three exception types reach the host:
 
 | Exception | When |
 |---|---|
-| `StarlarkSyntaxException` | The source does not parse, or a name is unresolved before the program runs. |
-| `StarlarkException` | A runtime error: a failed `fail()`, a type error, a missing key, recursion. |
+| `StarlarkSyntaxException` | The source does not parse. |
+| `StarlarkException` | An unresolved name (reported before the program runs), or a runtime error: a failed `fail()`, a type error, a missing key, recursion. |
 | `ExecutionLimitException` | A budget ran out (section 5). |
 
 `StarlarkException.Message` includes a source snippet with the failing line marked; `RawMessage` is the bare text, and
@@ -225,8 +234,9 @@ catch (StarlarkException e)
 
 ## 7. Dialects and extensions
 
-`Dialect` switches language features on and off. `Dialect.Standard` is the specification; `Dialect.Extended` turns on
-the common extensions. Use `with` to change one switch:
+`Dialect` switches language features on and off. `Dialect.Standard` is the specification; build other dialects with
+`Dialect.Standard with { ... }` (`Dialect.Extended`, which enables keyword-only arguments, types and top-level
+statements, is deprecated). The switches:
 
 | Switch | Default | What it allows |
 |---|---|---|
@@ -235,7 +245,7 @@ the common extensions. Use `with` to change one switch:
 | `EnableFStrings` | off | `f"..."` strings. |
 | `EnableKeywordOnlyArguments` | off | `def f(a, *, b)`. |
 | `EnablePositionalOnlyArguments` | off | `def f(a, /, b)`. |
-| `EnableRecursion` | off | A function may call itself (Go's `option:recursion`); the depth cap rises from 150 to 1000. |
+| `EnableRecursion` | off | A function may call itself (Go's `option:recursion`); the depth cap rises from 150 to 1000, but the thread's remaining stack can end a run sooner. |
 | `EnableFutures` | off | `parallel_map`, `spawn`, `all_of` (section 8). |
 | `EnableNondeterministicFutures` | off | `f.done()` and `first_of` (results then depend on timing). |
 | `EnableDef`, `EnableLambda`, `EnableLoad` | on | Turn off `def`, `lambda` or `load` for very restricted configuration files. |
@@ -446,11 +456,11 @@ only), `MutantReport` (summarises Stryker.NET mutation runs), `PrettyPrint`, `Se
 | `MaxSteps` | 0 (none) | Step budget per run. |
 | `Timeout` | none | Wall-clock budget per run. |
 | `Cancellation` | none | Host cancellation token. |
-| `MaxAllocatedBytes` | 0 (none) | Memory a run may allocate. |
-| `MaxCallDepth` | 150 (1000 with recursion) | Nested calls before "Maximum call depth exceeded". |
+| `MaxAllocatedBytes` | 0 (none) | Largest single string, list, tuple or bytes one operation may build; not a total. |
+| `MaxCallDepth` | 150 (1000 with recursion) | Nested calls before "Maximum call depth exceeded" ("Starlark stack overflow" with recursion); the thread's remaining stack can end a run sooner. |
 | `StringElements` | `Utf8` | String offsets in UTF-8 bytes or UTF-16 code units. |
 | `AllowGlobalReassign` | false | Let a file assign a global twice. |
 | `TypecheckBeforeExecute` | false | Run the static checker first and refuse programs with errors. |
 | `FutureLimits` | untrusted profile | Concurrency, spawn and host-operation caps; `RunInline`. |
 | `ThreadName`, `ThreadLocals` | empty | Go-style thread name and locals, visible to host functions through `ScriptThread`. |
-| `LastRunStats` | | After a run: steps, spawns, peak concurrency, host calls. |
+| `LastRunStats` | null | After a run that started tasks or host futures: steps, spawns, peak concurrency, host calls; null otherwise. |

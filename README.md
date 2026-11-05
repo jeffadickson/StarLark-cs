@@ -16,7 +16,7 @@ What it adds to the language:
 - **Futures**: `parallel_map`, `spawn` and `all_of` run work in parallel and still give deterministic results; host
   functions that return a `Task` can hand the script a future.
 - **A static type checker** that knows records, enums, structs, the bundled packages and the C# signatures of host functions.
-- **Budgets** for steps, wall-clock time, memory and cancellation, which no script can catch.
+- **Budgets** for steps, wall-clock time and cancellation, plus a per-allocation memory cap, which no script can catch.
 - **Typed interop**: `Register`, `Expose` (with `[Expose]` and `[Hide]`) and `DefineValue`.
 - **WebAssembly**: the same library runs in a browser.
 
