@@ -204,8 +204,7 @@ bool LowOnResources(out string why)
     why = "";
     try
     {
-        var info = GC.GetGCMemoryInfo();
-        double freeGb = (info.TotalAvailableMemoryBytes - info.MemoryLoadBytes) / 1073741824.0;
+        double freeGb = Native.AvailableMemoryGb();
         if (freeGb < opt.MinFreeGb) { why = $"only {freeGb:F1} GB of memory free"; return true; }
         double diskGb = new DriveInfo(Path.GetPathRoot(opt.Out)!).AvailableFreeSpace / 1073741824.0;
         if (diskGb < opt.MinDiskGb) { why = $"only {diskGb:F1} GB of disk free"; return true; }
@@ -276,5 +275,35 @@ sealed record Options(string Tests, string Out, TimeSpan? StartAt, double Hours,
             double.Parse(Get("child-gb", "3")),
             double.Parse(Get("min-free-gb", "4")),
             double.Parse(Get("min-disk-gb", "10")));
+    }
+}
+
+/// <summary>Native memory status, for <see cref="Native.AvailableMemoryGb"/>.</summary>
+static class Native
+{
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct MemoryStatus
+    {
+        public uint Length, MemoryLoad;
+        public ulong TotalPhys, AvailPhys, TotalPageFile, AvailPageFile, TotalVirtual, AvailVirtual, AvailExtendedVirtual;
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GlobalMemoryStatusEx(ref MemoryStatus status);
+
+    /// <summary>
+    /// Memory a new process could use right now, in GB, read from Windows each time it is asked. Cached file pages count as available,
+    /// as they are given up on demand. (<c>GC.GetGCMemoryInfo()</c> is not used for this: it describes the last garbage collection, so in a
+    /// process that has barely collected it is stale, and in a fresh one it reads zero load.)
+    /// </summary>
+    public static double AvailableMemoryGb()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var s = new MemoryStatus { Length = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MemoryStatus>() };
+            if (GlobalMemoryStatusEx(ref s)) return s.AvailPhys / 1073741824.0;
+        }
+        var info = GC.GetGCMemoryInfo();
+        return (info.TotalAvailableMemoryBytes - info.MemoryLoadBytes) / 1073741824.0;
     }
 }
