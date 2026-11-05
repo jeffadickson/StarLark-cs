@@ -7,10 +7,14 @@
 # Starlark has no math module and no exceptions, so this file also holds the functions BASIC needs (SQR, EXP, LOG, SIN,
 # COS, ATN, ^) written with series, and the number scanner that never fails on bad text.
 
+# The range of a 16-bit signed integer, the type of a variable with the % suffix and of small whole-number constants.
 INT_MIN = -32768
 INT_MAX = 32767
+# 2 to the power 127. Real single precision reaches nearly 2 to the power 128, but Level II reported ?OV from this value on, and so does this code.
 SNG_LIMIT = 1.7014118346046923e38      # 2**127: a single at or above this overflows (?OV ERROR)
+# Natural logarithm of 2. Used to split e**x and ln(x) into a power of two and a small remainder.
 LN2 = 0.6931471805599453
+# Constants for the sine and arc tangent code: pi, half of it (90 degrees) and twice it (a full turn).
 PI = 3.141592653589793
 HALF_PI = 1.5707963267948966
 TWO_PI = 6.283185307179586
@@ -30,6 +34,7 @@ def _make_pow2():
     return table
 
 # Exact powers of two, 2**-170 .. 2**170.
+# Built once at load.
 POW2 = _make_pow2()
 
 # ---------------------------------------------------------------- kinds
@@ -51,7 +56,8 @@ def to_float(v):
         return v[0]
     return float(v)
 
-# Largest integer not greater than x, as an int (floor), safe for any finite float (NaN gives 0; an infinity is an error).
+# Largest integer not greater than x, as an int (floor), for any finite float. NaN and the infinities are errors: int() refuses them. (The
+# `x != x` test below is meant to catch NaN, but in this Starlark nan == nan is true, so it never fires; NaN is stopped earlier, by overflows().)
 def floor_int(x):
     if x != x:
         return 0
@@ -100,9 +106,11 @@ def to_single(x):
     if a >= SNG_LIMIT:
         return sign * SNG_LIMIT
     e = binary_exponent(a)
+    # a * 2**(23 - e) puts the leading bit at position 23, so the integer part of the result is the 24-bit mantissa.
     scale = POW2[23 - e]
     q = a * scale
     n = int(q)
+    # The part that was cut off. More than a half rounds up; exactly a half rounds to the even neighbour, as the hardware does.
     frac = q - n
     if frac > 0.5 or (frac == 0.5 and n % 2 == 1):
         n += 1
@@ -131,13 +139,17 @@ def format_real(x, nd, expc):
         sign = "-"
         a = -x
     d = _sci_digits(a, nd)
+    # Trailing zeros are never printed (so 2.50 shows as 2.5 and 100 as 100, with the zeros put back below).
     digits = d[0].rstrip("0")
     e = d[1]
     if digits == "":
         digits = "0"
+    # The fixed-notation range. e is the exponent of the first digit: -2 is 0.0ddd (written .0ddd), and nd - 1 is the last place a number still fits in nd digits.
     if e >= -2 and e < nd:
         if e < 0:
+            # A number below 1: leading zeros after the point, no zero before it (Level II printed .5, not 0.5).
             body = "." + "0" * (-e - 1) + digits
+        # A whole number: the digits followed by the zeros that were dropped.
         elif len(digits) <= e + 1:
             body = digits + "0" * (e + 1 - len(digits))
         else:
@@ -146,6 +158,7 @@ def format_real(x, nd, expc):
         body = digits[0]
         if len(digits) > 1:
             body += "." + digits[1:]
+        # Scientific notation: E+07, E-05, and so on, always with a sign and at least two digits.
         body += expc + ("-" if e < 0 else "+") + ("%02d" % abs(e))
     return sign + body
 
@@ -203,18 +216,21 @@ def scan_number(s, i):
     ndig = (a - i)
     if has_dot:
         ndig += frac_end - a - 1
+    # No digits at all (for example a lone "."): there is no number here.
     if ndig == 0:
         return (0, i, -1)
     # Only significant digits decide between single and double precision, so leading zeros do not count.
     sig_text = s[i:a]
     if has_dot:
         sig_text += s[a + 1:frac_end]
+    # Count only significant digits, ignoring leading zeros, because that is what decides single versus double precision.
     sig = len(sig_text.lstrip("0"))
     mant_end = j
     has_exp = False
     dbl = False
     exp_sign = ""
     exp_digits = ""
+    # An exponent: E for single precision, D for double. It only counts if digits follow (with an optional sign), so "1E" is the number 1 followed by an E.
     if j < n and (s[j] == "E" or s[j] == "D"):
         k = j + 1
         if k < n and (s[k] == "+" or s[k] == "-"):
@@ -229,6 +245,7 @@ def scan_number(s, i):
     text = s[i:mant_end]
     ev = 0
     if has_exp:
+        # A huge exponent is clamped to an arbitrary large value instead of being converted, which keeps the next check simple and prevents very long digit runs.
         if len(exp_digits) > 6:
             ev = 999999
         else:
@@ -237,17 +254,21 @@ def scan_number(s, i):
             ev = -ev
     # float() refuses text that is too large, so refuse it first. Leading zeros are not counted.
     int_digits = len(s[i:a].lstrip("0"))
+    # Too big for any float this interpreter allows: report overflow before calling float(), which would raise an error on huge input.
     if int_digits + ev > 40:
         return (0, j, -2)
     value = 0.0
+    # An extremely small exponent underflows to zero, so skip float() (value stays 0.0).
     if not (has_exp and ev < -400):
         value = float(text + ("e" + exp_sign + exp_digits if has_exp else ""))
     suffix = ""
     if j < n and (s[j] == "%" or s[j] == "!" or s[j] == "#"):
         suffix = s[j]
         j += 1
+    # At or above the single limit counts as an overflow, even for a double constant (Level II doubles had a far wider range, but this is a deliberate limit).
     if value >= SNG_LIMIT:
         return (0, j, -2)
+    # The % suffix forces an integer; it overflows if the number is above 32767.
     if suffix == "%":
         iv = floor_int(value)
         if iv > INT_MAX:
@@ -411,6 +432,7 @@ def f_pow(x, y):
         n = floor_int(abs(y))
         result = 1.0
         base = x
+        # Repeated squaring: look at the bits of n from the low end. 12 passes cover exponents up to 4095, more than the 2048 allowed.
         for _ in range(12):
             if n % 2 == 1:
                 result = result * base

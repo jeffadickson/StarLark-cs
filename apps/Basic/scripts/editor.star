@@ -28,7 +28,9 @@
 # Not checked against a real machine (written from the manual as remembered): the backslash around deleted text, that S starts at the
 # character after the cursor, that a failed S runs to the end, and that a failed K does nothing. Each is one line below.
 
+# A program line is at most 255 characters, so insert and change stop adding at that length.
 MAX_LENGTH = 255
+# Deleted text is shown between two backslashes so the user can see what was removed.
 DELETE_MARK = "\\"
 
 # The text shown at the start of an edit and after L or A: the line number and a space.
@@ -121,6 +123,7 @@ def _argument_key(e, key):
     pos = e["pos"]
     found = -1
     seen = 0
+    # Start one past the cursor: the character under the cursor never matches.
     for j in range(pos + 1, len(buf)):
         if buf[j].upper() == want:
             seen += 1
@@ -158,6 +161,7 @@ def _command_key(e, key):
         e["pos"] = pos - back
         return ("\b" * back, "")
     k = key.upper()
+    # L: show the rest of the line from the cursor, then go back to the start and show the line number again.
     if k == "L":
         e["pos"] = 0
         return ("".join(buf[pos:]) + "\n" + edit_head(e), "")
@@ -177,11 +181,13 @@ def _command_key(e, key):
         e["mode"] = "insert"
         e["insert_from"] = pos
         return ("", "")
+    # X: jump to the end of the line and start inserting there. The rest of the line is shown as the cursor passes over it.
     if k == "X":
         e["pos"] = len(buf)
         e["mode"] = "insert"
         e["insert_from"] = len(buf)
         return ("".join(buf[pos:]), "")
+    # H ("hack"): delete everything after the cursor and start inserting there.
     if k == "H":
         e["buf"] = buf[:pos]
         e["mode"] = "insert"

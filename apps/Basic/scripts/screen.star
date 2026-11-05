@@ -9,12 +9,14 @@
 
 load("numbers.star", "floor_int", "to_float", "kind_of", "overflows")
 
+# The screen geometry: 64 columns by 16 rows, 1024 cells. VIDEO_BASE is where the real machine's video memory started, so POKE and PEEK use real addresses.
 COLUMNS = 64
 ROWS = 16
 CELLS = 1024
 VIDEO_BASE = 15360
 
 # Character -> screen code, for printing a character into video memory. Characters outside 0 to 255 are stored as 63, "?".
+# Map each character to its code, so putting text on the screen is a dictionary lookup per character.
 CODES = {"%c" % i: i for i in range(256)}
 
 # Build the table that shows the 64 possible 2 x 3 block-graphics cells as Unicode "sextant" characters (and the half and full blocks, which
@@ -182,6 +184,7 @@ def parse_using(fmt):
                     lit = ""
                 segs.append(("str", j - i + 1))
                 i = j + 1
+        # Any of these characters can start a numeric field. (The last test can never be true: a leading "-" is not a field start, only a trailing one is.)
         elif c == "#" or c == "." or c == "+" or c == "*" or c == "$" or (c == "-" and False):
             spec = {"lead_plus": False, "stars": False, "dollar": False, "int": 0, "frac": 0, "dot": False,
                     "commas": False, "trail": "", "exp": False, "width": 0}
@@ -189,10 +192,12 @@ def parse_using(fmt):
             if fmt[j] == "+":
                 spec["lead_plus"] = True
                 j += 1
+            # "**" at the start of a field fills leading blanks with asterisks and adds two digit places.
             if fmt.startswith("**", j):
                 spec["stars"] = True
                 spec["int"] += 2
                 j += 2
+            # "$$" puts a dollar sign just before the first digit and adds one digit place.
             if fmt.startswith("$$", j):
                 spec["dollar"] = True
                 spec["int"] += 1
@@ -204,6 +209,7 @@ def parse_using(fmt):
                 if d == "#":
                     spec["int"] += 1
                     j += 1
+                # A comma before the decimal point asks for thousands separators.
                 elif d == "," and not spec["dot"]:
                     spec["commas"] = True
                     j += 1
@@ -215,9 +221,11 @@ def parse_using(fmt):
                 k = _count(fmt, j, "#")
                 spec["frac"] = k
                 j += k
+            # Four carets ask for exponent notation, E+xx.
             if fmt.startswith("^^^^", j):
                 spec["exp"] = True
                 j += 4
+            # A trailing sign: "-" shows a minus for negatives and a blank otherwise, "+" shows the sign always. Not allowed if a leading plus was used.
             if j < n and (fmt[j] == "-" or fmt[j] == "+") and not spec["lead_plus"]:
                 spec["trail"] = fmt[j]
                 j += 1
@@ -228,6 +236,7 @@ def parse_using(fmt):
                 if lit != "":
                     segs.append(("lit", lit))
                     lit = ""
+                # The whole field width in characters, including signs, commas, the point and so on. The formatted number is padded on the left to this width.
                 spec["width"] = j - i
                 segs.append(("num", spec))
                 i = j
