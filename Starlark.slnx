@@ -24,6 +24,7 @@
   <Folder Name="/tools/">
     <Project Path="tools/CoverageReport/CoverageReport.csproj" />
     <Project Path="tools/Compress/Compress.csproj" />
+    <Project Path="tools/CommentCheck/CommentCheck.csproj" />
     <Project Path="tools/PrettyPrint/PrettyPrint.csproj" />
     <Project Path="tools/ExampleSync/ExampleSync.csproj" />
   </Folder>

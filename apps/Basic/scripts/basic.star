@@ -23,6 +23,8 @@ load("expr.star", "eval_at", "compile_expr", "var_key", "key_kind", "zero_of", "
 load("screen.star", "new_screen", "put_text", "newline", "clear_screen", "set_cursor", "set_pixel", "screen_lines",
      "format_using", "COLUMNS", "CELLS", "VIDEO_BASE")
 
+# The two-letter error codes in the order of the BASIC `ERROR n` statement: ERROR 1 is "NF", ERROR 2 is "SN", and so on. `ERR` reports twice the
+# position here, as Level II did (its codes were even numbers). A statement that fails returns one of these strings; handle_error prints it.
 ERRORS = ["NF", "SN", "RG", "OD", "FC", "OV", "OM", "UL", "BS", "DD", "/0", "ID", "TM", "OS", "LS", "ST", "CN", "NR", "RW", "UE",
           "MO", "FD", "L3", "UF"]
 
@@ -40,6 +42,9 @@ LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 # ---------------------------------------------------------------- the machine
 
+# Build a fresh machine and show the power-on banner and the READY prompt. The machine is this one dict `st`; every other function takes it first.
+# The keys fall into groups: the stored program and its caches, variables and arrays, where execution is (line, toks, pos), the two control
+# stacks (gosub, fors), DATA, the screen, the error handler, and the line editor.
 def new_state():
     st = {
         "program": {},          # line number -> text after the number
@@ -63,14 +68,17 @@ def new_state():
     ready(st)
     return st
 
+# Return everything printed since the last call as one string, and empty the buffer. The host calls this after each step to show the user.
 def take_output(st):
     text = "".join(st["out"])
     st["out"] = []
     return text
 
+# The 16 lines of the 64-column screen as a list of strings, trailing spaces removed (see screen_lines).
 def get_screen(st):
     return screen_lines(st)
 
+# Print "READY" and the ">" prompt on a fresh line. The end of every command, program run and error.
 def ready(st):
     if st["col"] != 0:
         newline(st)
@@ -82,12 +90,14 @@ def prompt_again(st):
         newline(st)
     put_text(st, ">")
 
+# Leave run mode and show READY. Used when a program ends, runs off its last line, or hits an error.
 def stop(st):
     st["running"] = False
     ready(st)
 
 # ---------------------------------------------------------------- program storage
 
+# Rebuild `order` (line numbers sorted) and `index` (line number -> position) if the program changed since they were built. Cheap to call often.
 def ensure_index(st):
     if st["dirty"]:
         order = sorted(st["program"].keys())
@@ -95,6 +105,7 @@ def ensure_index(st):
         st["index"] = {order[i]: i for i in range(len(order))}
         st["dirty"] = False
 
+# The tokens of a program line, tokenized on first use and cached in `tokcache`. The cache entry is dropped whenever the line changes.
 def get_toks(st, line):
     hit = st["tokcache"].get(line)
     if hit == None:
@@ -102,6 +113,7 @@ def get_toks(st, line):
         st["tokcache"][line] = hit
     return hit
 
+# Make `line` the line being executed: load its tokens into `toks`/`tokerr`. Line 0 is direct mode and uses the tokens of the typed command.
 def load_line(st, line):
     if line == 0:
         st["toks"] = st["direct"][0]
@@ -112,6 +124,8 @@ def load_line(st, line):
         st["tokerr"] = t[1]
     st["line"] = line
 
+# Go to the start of program line `line` (GOTO, GOSUB, RUN, ON...GOTO). Returns "UL" (undefined line) if it does not exist, otherwise "".
+# With TRON on, also prints the line number in square brackets.
 def jump_to(st, line):
     if line not in st["program"]:
         return "UL"
@@ -121,6 +135,7 @@ def jump_to(st, line):
         put_text(st, "[%d]" % line)
     return ""
 
+# Fall through to the line after the current one. In direct mode, or after the last line, the run ends instead.
 def next_line(st):
     if st["line"] == 0:
         stop(st)
@@ -170,6 +185,8 @@ def split_fields(text):
 
 # ---------------------------------------------------------------- errors
 
+# Report error `code`. If ON ERROR GOTO is active, jump to the handler and remember where to RESUME; otherwise print "?XX ERROR IN line" (no
+# "IN" in direct mode) and stop. A bad DATA item sets `errat` so the message names its own line.
 def handle_error(st, code):
     line = st.pop("errat", st["line"])   # a bad DATA item names its own line
     st["errcode"] = ERRORS.index(code) * 2 if code in ERRORS else 40
@@ -188,6 +205,7 @@ def handle_error(st, code):
     st["cont"] = None
     stop(st)
 
+# The BREAK key. Prints "BREAK IN line", remembers where the program was so CONT can carry on, and stops. Does nothing if nothing is running.
 def break_program(st):
     if not st["running"]:
         return
@@ -200,24 +218,30 @@ def break_program(st):
 
 # ---------------------------------------------------------------- statement helpers
 
+# True when the next token ends a statement: the end of the line, a colon, or ELSE.
 def at_end(toks, p):
     if p >= len(toks):
         return True
     t = toks[p]
     return (t[0] == "o" and t[1] == ":") or (t[0] == "k" and t[1] == "ELSE")
 
+# Finish a statement: check nothing but the end of the statement is left, then record `p` as where execution continues. Returns "SN" if
+# there is junk after the statement, otherwise "". Almost every st_* function returns through this.
 def done_stmt(st, toks, p):
     if not at_end(toks, p):
         return "SN"
     st["pos"] = p
     return ""
 
+# True if the token at position p is the operator or punctuation mark `op` (for example "," or "(").
 def is_op(toks, p, op):
     return p < len(toks) and toks[p][0] == "o" and toks[p][1] == op
 
+# True if the token at position p is the keyword `word` (for example "THEN").
 def is_kw(toks, p, word):
     return p < len(toks) and toks[p][0] == "k" and toks[p][1] == word
 
+# The line number written at toks[p] (a GOTO target, say) as an int, or -1 if that token is not a plain integer.
 def line_number(toks, p):
     if p >= len(toks) or toks[p][0] != "n":
         return -1
@@ -259,6 +283,8 @@ def parse_target(st, toks, p):
         return (key, r[0], r[1], "")
     return (key, None, q, "")
 
+# Store `v` in the variable `key`, or in the array element `key(subs)`, converting it to the variable's type first. Returns an error code or "":
+# "TM" for a type mismatch, "OV" for a number out of range, "LS" for a string over 255 characters, "BS" for a bad subscript.
 def assign(st, key, subs, v):
     kind = key_kind(key)
     cv = coerce(kind, v)
@@ -275,6 +301,7 @@ def assign(st, key, subs, v):
     loc[0][1][loc[1]] = cv[0]
     return ""
 
+# A numeric argument as a whole number. Returns (int, "") or (0, "TM") if it is a string. Fractions round down, as BASIC does.
 def number_arg(v):
     if kind_of(v) == 3:
         return (0, "TM")
@@ -282,6 +309,8 @@ def number_arg(v):
 
 # ---------------------------------------------------------------- statements
 
+# PRINT. Handles `@ position`, USING, and the separators: ";" joins, "," moves to the next 16-column field (or the next line past column 48),
+# TAB( and SPC(. A newline is printed at the end unless the statement ends in ; or ,. Numbers print with a leading sign slot and a trailing space.
 def st_print(st, toks, pos):
     n = len(toks)
     p = pos
@@ -350,6 +379,7 @@ def st_print(st, toks, pos):
         put_text(st, "\n")
     return done_stmt(st, toks, p)
 
+# PRINT USING "format"; values: format each value by the template and print the result. A trailing ; or , suppresses the newline.
 def print_using(st, toks, pos):
     r = eval_at(st, toks, pos)
     if r[2] != "":
@@ -385,6 +415,7 @@ def print_using(st, toks, pos):
         put_text(st, "\n")
     return done_stmt(st, toks, p)
 
+# Assignment: `LET A=expr`, or just `A=expr`. The target may be an array element.
 def st_let(st, toks, pos):
     t = parse_target(st, toks, pos)
     if t[3] != "":
@@ -400,14 +431,17 @@ def st_let(st, toks, pos):
         return err
     return done_stmt(st, toks, r[1])
 
+# Jump to `line`, or "SN" if the number was not a valid line number.
 def goto_line(st, line):
     if line < 0:
         return "SN"
     return jump_to(st, line)
 
+# GOTO line.
 def st_goto(st, toks, pos):
     return goto_line(st, line_number(toks, pos))
 
+# GOSUB line: push the place to come back to (the line and the position after the number) and jump. At most 400 deep ("OM" beyond that).
 def st_gosub(st, toks, pos):
     line = line_number(toks, pos)
     if line < 0:
@@ -419,6 +453,7 @@ def st_gosub(st, toks, pos):
     st["gosub"].append((st["line"], pos + 1))
     return jump_to(st, line)
 
+# RETURN: pop the saved place and carry on after the GOSUB. "RG" if there is no GOSUB to return to.
 def st_return(st, toks, pos):
     if len(st["gosub"]) == 0:
         return "RG"
@@ -427,6 +462,8 @@ def st_return(st, toks, pos):
     st["pos"] = back[1]
     return ""
 
+# IF cond THEN ... [ELSE ...]. A true condition continues after THEN (a bare number there means GOTO that line). A false one skips to the
+# matching ELSE, counting nested IFs, or to the next line if there is none.
 def st_if(st, toks, pos):
     n = len(toks)
     r = eval_at(st, toks, pos)
@@ -463,10 +500,13 @@ def st_if(st, toks, pos):
     st["pos"] = p
     return ""
 
+# Reached by running into ELSE after a finished THEN part: the rest of the line belongs to the false branch, so skip it.
 def st_else(st, toks, pos):
     # Reached only by running into the ELSE of an IF whose THEN part has just finished: skip the rest of the line.
     return next_line(st)
 
+# FOR v = start TO limit [STEP s]. Sets the variable and pushes a loop frame (variable, limit, step, line, position). Starting a FOR on a
+# variable that already has a frame replaces that frame, which also discards any loops nested inside it. At most 100 loops ("OM").
 def st_for(st, toks, pos):
     t = parse_target(st, toks, pos)
     if t[3] != "":
@@ -510,6 +550,8 @@ def st_for(st, toks, pos):
     st["pos"] = p
     return ""
 
+# NEXT [v[,v...]]. Adds the step to the loop variable and jumps back to just after the FOR if the loop should go on, otherwise pops the frame.
+# The test is made here, at NEXT, so a loop body always runs once, as on Level II. "NF" if there is no matching FOR.
 def st_next(st, toks, pos):
     n = len(toks)
     p = pos
@@ -557,6 +599,7 @@ def st_next(st, toks, pos):
         st["fors"] = fors[:f]
     return done_stmt(st, toks, p)
 
+# ON expr GOTO/GOSUB line,line,... picks the nth line (nothing happens if n is 0 or too big). Also ON ERROR GOTO line, which sets the error handler.
 def st_on(st, toks, pos):
     if is_kw(toks, pos, "ERROR"):
         if not is_kw(toks, pos + 1, "GOTO"):
@@ -604,6 +647,8 @@ def st_on(st, toks, pos):
         st["gosub"].append((st["line"], p))
     return jump_to(st, target)
 
+# INPUT ["prompt";] variables. Prints the prompt and leaves the machine waiting: `run` returns "waiting" and the host calls submit with the
+# typed line, which feed_input handles. Only allowed inside a program ("ID" in direct mode).
 def st_input(st, toks, pos):
     if st["line"] == 0:
         return "ID"
@@ -673,6 +718,7 @@ def feed_input(st, text):
             handle_error(st, err)
             return
 
+# READ variables: take the next DATA items, converting each to the variable's type. "OD" when the data runs out.
 def st_read(st, toks, pos):
     p = pos
     for _ in range(len(toks) + 1):
@@ -701,13 +747,16 @@ def st_read(st, toks, pos):
             break
     return done_stmt(st, toks, p)
 
+# DATA is only read by build_data; when execution reaches the statement it does nothing.
 def st_data(st, toks, pos):
     return done_stmt(st, toks, pos + 1)
 
+# RESTORE: read DATA again from the first item.
 def st_restore(st, toks, pos):
     st["dptr"] = 0
     return done_stmt(st, toks, pos)
 
+# DIM A(n[,m...]) ...: create arrays; each subscript runs from 0 to the number given. "DD" if the array exists already.
 def st_dim(st, toks, pos):
     p = pos
     for _ in range(len(toks) + 1):
@@ -737,15 +786,18 @@ def st_dim(st, toks, pos):
             break
     return done_stmt(st, toks, p)
 
+# REM: ignore the rest of the line.
 def st_rem(st, toks, pos):
     return next_line(st)
 
+# END: stop the program and show READY. It cannot be continued with CONT.
 def st_end(st, toks, pos):
     st["running"] = False
     st["cont"] = None
     ready(st)
     return ""
 
+# STOP: like BREAK, so CONT can carry on from here.
 def st_stop(st, toks, pos):
     if st["col"] != 0:
         newline(st)
@@ -754,16 +806,20 @@ def st_stop(st, toks, pos):
     stop(st)
     return ""
 
+# CLS: clear the screen.
 def st_cls(st, toks, pos):
     clear_screen(st)
     return done_stmt(st, toks, pos)
 
+# SET(x,y): turn on a block-graphics dot (128 x 48 dots).
 def st_set(st, toks, pos):
     return pixel(st, toks, pos, True)
 
+# RESET(x,y): turn a block-graphics dot off.
 def st_reset(st, toks, pos):
     return pixel(st, toks, pos, False)
 
+# Shared by SET and RESET: check the two coordinates (0-127 and 0-47) and change the dot.
 def pixel(st, toks, pos, on):
     r = paren_args(st, toks, pos)
     if r[2] != "":
@@ -779,6 +835,7 @@ def pixel(st, toks, pos, on):
     set_pixel(st, x[0], y[0], on)
     return done_stmt(st, toks, r[1])
 
+# POKE address,value. Writes to video memory (addresses 15360 to 16383) change the screen; any other address is kept in `mem`, which PEEK reads back.
 def st_poke(st, toks, pos):
     r1 = eval_at(st, toks, pos)
     if r1[2] != "":
@@ -803,19 +860,25 @@ def st_poke(st, toks, pos):
         st["mem"][addr] = v[0]
     return done_stmt(st, toks, r2[1])
 
+# RANDOM: reseed the random generator. Mixes in the step count so repeated calls differ, while a run from the same state stays repeatable.
 def st_random(st, toks, pos):
     st["seed"] = (st["seed"] * 3 + 17 + st["steps"]) % 2147483648
     return done_stmt(st, toks, pos)
 
+# TRON: from now on print each line number in brackets as it runs.
 def st_tron(st, toks, pos):
     st["trace"] = True
     return done_stmt(st, toks, pos)
 
+# TROFF: stop printing line numbers.
 def st_troff(st, toks, pos):
     st["trace"] = False
     return done_stmt(st, toks, pos)
 
+# Make the handler for DEFINT, DEFSNG, DEFDBL or DEFSTR. `kind` is the type (0 integer, 1 single, 2 double, 3 string) given to variables whose
+# names start with the letters listed (A, or a range like A-F). Returns a function because the four statements differ only in `kind`.
 def deftype_statement(kind):
+    # The statement itself, closed over `kind`: read a list of single letters or ranges (A, B-F) and set their default type.
     def run_it(st, toks, pos):
         p = pos
         for _ in range(len(toks) + 1):
@@ -838,6 +901,7 @@ def deftype_statement(kind):
         return done_stmt(st, toks, p)
     return run_it
 
+# DEF FNname(params) = expression. The expression is compiled now and stored under the name; it is evaluated when called. Program lines only.
 def st_def(st, toks, pos):
     if st["line"] == 0:
         return "ID"
@@ -868,6 +932,7 @@ def st_def(st, toks, pos):
     st["fns"][name] = (params, r[0])
     return done_stmt(st, toks, r[1])
 
+# CLEAR: forget all variables, arrays and loop and subroutine state. The optional number (string space in BASIC) is evaluated and ignored.
 def st_clear(st, toks, pos):
     p = pos
     if not at_end(toks, p):
@@ -881,6 +946,7 @@ def st_clear(st, toks, pos):
     st["fors"] = []
     return done_stmt(st, toks, p)
 
+# ERROR n: raise error number n as if it had happened. 1 to 24 are the standard codes; larger ones are "UE" (unprintable error).
 def st_error(st, toks, pos):
     r = eval_at(st, toks, pos)
     if r[2] != "":
@@ -894,6 +960,8 @@ def st_error(st, toks, pos):
         return ERRORS[c[0] - 1]
     return "UE"
 
+# RESUME [NEXT | line]: leave the ON ERROR handler. Plain RESUME retries the statement that failed, NEXT carries on after it, and a line number
+# goes there. "RW" if no error is being handled.
 def st_resume(st, toks, pos):
     if not st["inerr"]:
         return "RW"
@@ -923,6 +991,7 @@ def st_resume(st, toks, pos):
 
 # ---------------------------------------------------------------- commands (also usable as statements)
 
+# What RUN and NEW clear: variables, arrays, user functions, the control stacks, the error handler, type defaults. Then rebuild the DATA list.
 def reset_run_state(st):
     st["vars"] = {}
     st["arrays"] = {}
@@ -936,6 +1005,7 @@ def reset_run_state(st):
     st["deftype"] = {c: 1 for c in LETTERS.elems()}
     build_data(st)
 
+# RUN [line]: clear the run state and start at the first line (or the given one).
 def st_run(st, toks, pos):
     ensure_index(st)
     reset_run_state(st)
@@ -990,6 +1060,7 @@ def edit_key(st, key):
 def editing(st):
     return st["edit"] != None
 
+# NEW: delete the program and everything else.
 def st_new(st, toks, pos):
     st["program"] = {}
     st["tokcache"] = {}
@@ -999,6 +1070,7 @@ def st_new(st, toks, pos):
     stop(st)
     return ""
 
+# CONT: carry on after BREAK or STOP. "CN" if the program changed or ended, since there is nothing to continue.
 def st_cont(st, toks, pos):
     if st["cont"] == None:
         return "CN"
@@ -1074,6 +1146,7 @@ def display_text(text):
             i += 1
     return out
 
+# LIST [range]: print the program lines in order.
 def st_list(st, toks, pos):
     r = line_range(toks, pos)
     if r[2] != "":
@@ -1085,6 +1158,7 @@ def st_list(st, toks, pos):
     stop(st)
     return ""
 
+# DELETE range: remove the lines. "FC" if the range holds no lines.
 def st_delete(st, toks, pos):
     r = line_range(toks, pos)
     if r[2] != "":
@@ -1100,6 +1174,8 @@ def st_delete(st, toks, pos):
     stop(st)
     return ""
 
+# Statement keyword -> the function that runs it. exec_stmt looks the first keyword of a statement up here. A statement starting with a
+# variable name is an assignment and does not need an entry.
 STATEMENTS = {
     "PRINT": st_print, "GOTO": st_goto, "GOSUB": st_gosub, "RETURN": st_return, "IF": st_if, "ELSE": st_else,
     "FOR": st_for, "NEXT": st_next, "ON": st_on, "INPUT": st_input, "READ": st_read, "DATA": st_data,

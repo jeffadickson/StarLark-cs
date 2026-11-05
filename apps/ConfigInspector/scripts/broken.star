@@ -1,5 +1,6 @@
 load("defaults.star", "make_config")
 
+# Wrong on purpose: promises an int and returns a string (n + "2"). The checker finds it before the config is built.
 def replicas_for(n: int) -> int:
     return n + "2"
 

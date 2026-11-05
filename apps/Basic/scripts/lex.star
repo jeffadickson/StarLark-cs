@@ -26,6 +26,7 @@ KEYWORDS = [
     "POINT", "MEM", "INKEY$", "ERL", "ERR",
 ]
 
+# Group the keywords by first letter, longest first, so keyword_at tries STRING$ before STR and INT before IN.
 def _index_keywords():
     index = {}
     # Longest first, so that STRING$ is not read as STR and INT is not read as IN.
@@ -35,18 +36,22 @@ def _index_keywords():
 
 KEYWORD_INDEX = _index_keywords()
 
+# The keyword that starts at position i of the (upper-case) text, or "". Keywords are found anywhere, even in the middle of a name, as on Level II.
 def keyword_at(u, i):
     for word in KEYWORD_INDEX.get(u[i], []):
         if u.startswith(word, i):
             return word
     return ""
 
+# True for the characters "0" to "9".
 def _is_digit(c):
     return c >= "0" and c <= "9"
 
+# True for the upper-case letters "A" to "Z". The text is upper-cased before it is scanned.
 def _is_letter(c):
     return c >= "A" and c <= "Z"
 
+# The value of a hexadecimal digit (0-9, A-F), or -1.
 def _hex_value(c):
     if c >= "0" and c <= "9":
         return ord_digit(c)
@@ -54,6 +59,7 @@ def _hex_value(c):
         return 10 + "ABCDEF".find(c)
     return -1
 
+# The value of a decimal digit character, or -1.
 def ord_digit(c):
     return "0123456789".find(c)
 

@@ -31,6 +31,7 @@
 MAX_LENGTH = 255
 DELETE_MARK = "\\"
 
+# The text shown at the start of an edit and after L or A: the line number and a space.
 def edit_head(e):
     return "%d " % e["line"]
 
@@ -47,15 +48,20 @@ def new_edit(line, text):
         "insert_from": 0,     # where this insert began; backspace never goes before it
     }
 
+# The line as it is now, as a string.
 def edit_text(e):
     return "".join(e["buf"])
 
+# True for a one-character key that can go into the line (not a control key or DEL).
 def _printable(key):
     return len(key) > 0 and ord(key) >= 32 and ord(key) != 127
 
+# True for the keys that mean backspace: BS (8) and DEL (127).
 def _is_backspace(key):
     return key == "\b" or key == "\x7f"
 
+# Feed the editor one key. Returns (text to show, action) where action is "" (carry on), "save" or "quit". Enter always saves. Otherwise the key goes
+# to the handler for the current mode: inserting, changing, waiting for the character of S or K, or an ordinary command.
 def edit_step(e, key):
     if key == "\r" or key == "\n":
         return ("".join(e["buf"][e["pos"]:]), "save")
@@ -68,6 +74,8 @@ def edit_step(e, key):
         return _argument_key(e, key)
     return _command_key(e, key)
 
+# A key while inserting. Escape ends the insert. Backspace takes back the last typed character but never goes before where the insert began.
+# Any printable key is put in at the cursor, up to the 255-character limit.
 def _insert_key(e, key):
     if key == "\x1b":
         e["mode"] = "cmd"
@@ -84,6 +92,8 @@ def _insert_key(e, key):
         return (key, "")
     return ("", "")
 
+# A key in change mode (the C command): each printable key replaces the character under the cursor, until the counted number have been
+# changed or Escape is pressed.
 def _change_key(e, key):
     if key == "\x1b":
         e["mode"] = "cmd"
@@ -98,6 +108,9 @@ def _change_key(e, key):
         return (key, "")
     return ("", "")
 
+# The character that S (search) or K (kill) was waiting for. Finds the nth following occurrence, counting from the character after the cursor.
+# S moves the cursor to just before it and shows what it passes (to the end of the line if there is none); K deletes up to just before it
+# (and does nothing if there is none).
 def _argument_key(e, key):
     command = e["pending"]
     e["pending"] = ""
@@ -124,6 +137,8 @@ def _argument_key(e, key):
     e["buf"] = buf[:pos] + buf[found:]
     return (DELETE_MARK + "".join(buf[pos:found]) + DELETE_MARK, "")
 
+# A key in command mode: a digit builds up a repeat count, then Space, Backspace, L, D, C, I, X, H, S, K, Q, A, E act as described at the top of this
+# file. Any other key does nothing.
 def _command_key(e, key):
     if len(key) == 1 and key >= "0" and key <= "9":
         e["count"] = min(255, e["count"] * 10 + int(key))

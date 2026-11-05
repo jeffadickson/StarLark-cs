@@ -5,6 +5,8 @@ def basket_total(items):
         total += i.price * i.qty
     return total
 
+# The tenant's policy. Called by the host with a request (customer and items) and returns a decision: whether to allow it, the discount, and a reason. Gold and Silver customers get 15% and 5%,
+# five or more items add 2%, and a basket over 5000 needs a verified customer.
 def decide(request):
     total = basket_total(request.items)
     rate = 0.0

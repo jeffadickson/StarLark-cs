@@ -3,6 +3,8 @@
 
 load("world.star", "ROOMS", "ITEMS", "SYNONYMS", "DIRECTIONS", "START", "MAX_TURNS")
 
+# A new game's state: the starting room, where every item is, and counters. `where` maps each item to a room name, to "inventory", or to None for an
+# item that does not exist yet (the parchment and gem appear when the bones and chest are examined). The state is a plain dict, so a game can be saved or compared.
 def new_game():
     where = {}
     for name in ITEMS:
@@ -20,21 +22,26 @@ def new_game():
         "found": [],                 # scoring events already awarded
     }
 
+# Add `points` to the score the first time `key` is earned. Each event scores once however often it is repeated (recorded in `found`).
 def award(state, key, points):
     if key not in state["found"]:
         state["found"].append(key)
         state["score"] += points
 
+# Names of the items lying in the room the player is in.
 def items_here(state):
     return [n for n in ITEMS if state["where"][n] == state["room"]]
 
+# Names of the items the player is carrying.
 def carried(state):
     return [n for n in ITEMS if state["where"][n] == "inventory"]
 
+# True if the player cannot see: the room is dark and either the lamp is off or the player is not carrying it.
 def is_dark(state):
     room = ROOMS[state["room"]]
     return room.get("dark", False) and not (state["lamp_on"] and "lamp" in carried(state))
 
+# Match a typed noun against the names of the items in `where_list`; returns the item's name, or None. An item has several names (lamp, lantern, brass lamp).
 def find_item(state, word, where_list):
     # Match a typed noun against item names, looking only in the places given.
     for name in where_list:
@@ -42,6 +49,8 @@ def find_item(state, word, where_list):
             return name
     return None
 
+# The text for the room: its name, its long description (the first time and on LOOK), the items here, and the exits. In the dark that is replaced by a
+# warning. Marks the room as seen.
 def describe(state, full):
     room = ROOMS[state["room"]]
     if is_dark(state):
@@ -58,6 +67,8 @@ def describe(state, full):
     out.append("Exits: " + ", ".join(exits) + ".")
     return "\n".join(out)
 
+# Go in `direction`. A dark room is dangerous to go deeper into: heading anywhere but back out ends the game. A locked exit stays shut until its door is unlocked.
+# Entering the vault scores points.
 def move(state, direction):
     room = ROOMS[state["room"]]
     if direction not in room["exits"]:
@@ -74,6 +85,7 @@ def move(state, direction):
         award(state, "vault", 20)
     return describe(state, False)
 
+# Look at an item here or carried. Examining the bones reveals the parchment and examining the chest reveals the gem, by moving them into the room (each also scores).
 def examine(state, word):
     if word == "":
         return "Examine what?"
@@ -94,6 +106,7 @@ def examine(state, word):
         text += "\nInside, resting on velvet, is a gem."
     return text
 
+# Pick an item up if it is here and can be taken. Taking the gem wins the game.
 def take(state, word):
     if word == "":
         return "Take what?"
@@ -114,6 +127,7 @@ def take(state, word):
         return "Taken.\nThe gem blazes and the vault fills with light. You have found the treasure!\n*** YOU HAVE WON ***"
     return "Taken."
 
+# Put an item down in the current room. Dropping the lamp turns it off.
 def drop(state, word):
     name = find_item(state, word, carried(state))
     if name == None:
@@ -123,6 +137,7 @@ def drop(state, word):
         state["lamp_on"] = False
     return "Dropped."
 
+# Turn the lamp on or off. Needs the lamp in the inventory. Turning it on in a dark room shows the room.
 def use_light(state, on):
     if "lamp" not in carried(state):
         return "You have no lamp."
@@ -134,6 +149,7 @@ def use_light(state, on):
         return "The lamp glows warmly." + ("\n" + describe(state, True) if ROOMS[state["room"]].get("dark", False) else "")
     return "The lamp goes out."
 
+# Unlock the first locked door in the room, if the player carries the key.
 def unlock(state):
     room = ROOMS[state["room"]]
     locked = room.get("locked", {})
@@ -148,12 +164,15 @@ def unlock(state):
             return "The bronze key turns with a groan. The " + locked[direction] + " swings open."
     return "It is already unlocked."
 
+# List what the player is carrying.
 def inventory(state):
     c = carried(state)
     if not c:
         return "You are carrying nothing."
     return "You are carrying: " + ", ".join([ITEMS[n]["names"][0] for n in c]) + "."
 
+# Turn a typed line into (verb, noun). Filler words (the, a, an, to, at) are dropped, synonyms are mapped to one verb, and a bare direction like "n" or "north"
+# becomes "go" plus the direction. Returns ("", "") for an empty line.
 def parse(line):
     words = [w for w in line.lower().split(" ") if w != "" and w not in ["the", "a", "an", "to", "at"]]
     if not words:
@@ -170,6 +189,8 @@ def parse(line):
         noun = SYNONYMS[noun]
     return verb, noun
 
+# One turn of the game: parse the line, run the matching action, and return the reply. A finished game only reports the score. Running out of turns (MAX_TURNS)
+# ends the game. An unknown verb gets a polite reply and still counts as a turn.
 def step(state, line):
     if state["done"]:
         return "The game is over. Final score: " + str(state["score"]) + "."

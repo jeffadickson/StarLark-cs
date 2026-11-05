@@ -1,5 +1,6 @@
 load("defaults.star", "make_config")
 
+# Two replicas per region.
 def replicas_for(regions: list[str]) -> int:
     return 2 * len(regions)
 

@@ -14,8 +14,11 @@ ROWS = 16
 CELLS = 1024
 VIDEO_BASE = 15360
 
+# Character -> screen code, for printing a character into video memory. Characters outside 0 to 255 are stored as 63, "?".
 CODES = {"%c" % i: i for i in range(256)}
 
+# Build the table that shows the 64 possible 2 x 3 block-graphics cells as Unicode "sextant" characters (and the half and full blocks, which
+# Unicode keeps elsewhere). Index is the six-bit pattern, one bit per block.
 def _make_sextants():
     table = []
     for pattern in range(64):
@@ -38,13 +41,16 @@ def _make_sextants():
 
 SEXTANTS = _make_sextants()
 
+# A blank screen: 1,024 cells (16 rows of 64) all holding the space character (32).
 def new_screen():
     return [32] * CELLS
 
+# Move every row up one and blank the bottom row; the cursor goes to the start of the bottom row.
 def _scroll(st):
     st["screen"] = st["screen"][COLUMNS:] + [32] * COLUMNS
     st["cur"] = CELLS - COLUMNS
 
+# Move the cursor to the start of the next row, scrolling if that was the last one.
 def newline(st):
     cur = (st["cur"] // COLUMNS + 1) * COLUMNS
     st["cur"] = cur
@@ -69,21 +75,26 @@ def put_text(st, s):
             screen = st["screen"]
         st["col"] = st["cur"] % COLUMNS
 
+# CLS: blank the screen, home the cursor, and put a form feed in the output stream so a terminal host can clear too.
 def clear_screen(st):
     st["screen"] = new_screen()
     st["cur"] = 0
     st["col"] = 0
     st["out"].append("\f")
 
+# Move the cursor to the cell `pos` (0 to 1023), as PRINT @ does.
 def set_cursor(st, pos):
     st["cur"] = pos
     st["col"] = pos % COLUMNS
 
 # ---------------------------------------------------------------- graphics
 
+# Which character cell holds the block-graphics dot (x, y), and which of the cell's six bits it is. A cell is 2 dots wide and 3 high.
 def _cell_and_bit(x, y):
     return ((y // 3) * COLUMNS + x // 2, 1 << ((y % 3) * 2 + x % 2))
 
+# Turn the dot (x, y) on or off. A cell that held text becomes a graphics cell (codes 128 to 191); one whose dots are all off stays a blank
+# graphics cell (128), not the space character.
 def set_pixel(st, x, y, on):
     c = _cell_and_bit(x, y)
     code = st["screen"][c[0]]
@@ -97,6 +108,7 @@ def set_pixel(st, x, y, on):
             code = 128
     st["screen"][c[0]] = code
 
+# True if the dot (x, y) is on: the cell must be a graphics cell and the dot's bit set. This is what POINT reads.
 def point_on(st, x, y):
     c = _cell_and_bit(x, y)
     code = st["screen"][c[0]]
@@ -104,6 +116,7 @@ def point_on(st, x, y):
 
 # ---------------------------------------------------------------- showing the screen
 
+# The character to show for a screen code: text for 32 to 127, a sextant for 128 to 191, a space for anything else.
 def _glyph(code):
     if code >= 32 and code < 128:
         return "%c" % code
@@ -122,6 +135,7 @@ def screen_lines(st):
 
 # ---------------------------------------------------------------- PRINT USING
 
+# How many times the character `ch` repeats in s starting at i. Used to measure runs of # in a PRINT USING template.
 def _count(s, i, ch):
     j = i
     for k in range(i, len(s)):
@@ -224,6 +238,7 @@ def parse_using(fmt):
         segs.append(("lit", lit))
     return segs
 
+# Put a comma between every group of three digits, from the right: "1234567" becomes "1,234,567".
 def _with_commas(digits):
     out = ""
     n = len(digits)

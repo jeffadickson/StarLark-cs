@@ -1,5 +1,7 @@
+# The allowed log levels. Anything else is an error when the config is made.
 LogLevel = enum("debug", "info", "warn", "error")
 
+# The shape of a configuration, with a type for each field. Making a Config with a wrongly typed field is an error.
 Config = record(
     name = str,
     replicas = int,
@@ -9,6 +11,7 @@ Config = record(
     regions = list[str],
 )
 
+# Values used when an environment does not set them.
 DEFAULTS = {
     "name": "app",
     "replicas": 1,

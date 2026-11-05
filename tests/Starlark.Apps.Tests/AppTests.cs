@@ -18,7 +18,8 @@ public class AppTests
         Assert.Contains("[5/5] cc_binary  client", o);
         Assert.Contains("error: dependency cycle: a -> b -> c -> a", o);
         Assert.Contains("is not a valid element of this enumeration", o);
-        Assert.Contains("//rules:cc.star:15", o);
+        // The line of `opt = Opt(opt).value` in rules/cc.star. It moves whenever comments are added above it.
+        Assert.Contains("//rules:cc.star:18", o);
     }
 
     [Fact]

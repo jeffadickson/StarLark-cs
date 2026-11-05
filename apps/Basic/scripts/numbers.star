@@ -15,6 +15,8 @@ PI = 3.141592653589793
 HALF_PI = 1.5707963267948966
 TWO_PI = 6.283185307179586
 
+# Build the table of exact powers of two from 2**-170 to 2**170, indexed by exponent. Multiplying or halving by two is exact in floating point,
+# so every entry is exact.
 def _make_pow2():
     table = {}
     x = 1.0
@@ -43,6 +45,7 @@ def kind_of(v):
         return 2
     return 3
 
+# Any BASIC number as a float. A double is stored as a one-item tuple (so it can be told from a single), and this unwraps it.
 def to_float(v):
     if type(v) == "tuple":
         return v[0]
@@ -57,6 +60,7 @@ def floor_int(x):
         n -= 1
     return n
 
+# The negative of a number, keeping its type. -32768 has no 16-bit negative, so it becomes the single-precision 32768.0.
 def negate(v):
     k = kind_of(v)
     if k == 0:
@@ -104,6 +108,7 @@ def to_single(x):
         n += 1
     return sign * (n / scale)
 
+# True if a value is too big for single precision, or is not a number.
 def overflows(x):
     return x >= SNG_LIMIT or x <= -SNG_LIMIT or x != x
 
@@ -153,6 +158,7 @@ def number_text(v):
         return format_real(v, 6, "E")
     return format_real(v[0], 16, "D")
 
+# True if a number is below zero, for any of the three numeric types.
 def _is_negative(v):
     k = kind_of(v)
     if k == 2:
@@ -172,6 +178,7 @@ def print_text(v):
 
 # ---------------------------------------------------------------- reading numbers
 
+# The index just after the run of decimal digits that starts at s[i] (i itself if there are none).
 def span_digits(s, i):
     j = i
     for k in range(i, len(s)):
@@ -343,6 +350,8 @@ def f_log(x):
         s += t / (2 * i + 1)
     return e * LN2 + 2.0 * s
 
+# Sine by reduction and series: bring x into -pi/2..pi/2 using the periodicity and symmetry of sine, then sum the Taylor series. Good to the six
+# or seven digits Level II printed. (The separate package std/approx_math.star is a more accurate, general version.)
 def f_sin(x):
     if x >= 0.0:
         k = int(x / TWO_PI + 0.5)
@@ -361,9 +370,12 @@ def f_sin(x):
         s += term
     return s
 
+# Cosine, as the sine of x plus a quarter turn.
 def f_cos(x):
     return f_sin(x + HALF_PI)
 
+# Arc tangent: fold x into 0..1 using atan(-x) = -atan(x) and atan(1/x) = pi/2 - atan(x), halve the angle twice to make the series converge
+# fast, sum the series, and undo the folding.
 def f_atn(x):
     neg = x < 0.0
     a = x

@@ -6,6 +6,8 @@
 # A room is a record: a name, a description (shown the first time and on LOOK), and its exits. An item says where it
 # is, what it is called, and what you can do with it. "dark" rooms need the lamp.
 
+# Every room: `name`, `text` (shown the first time and on LOOK), `exits` (direction -> room), an optional `dark` flag, and an optional `locked` map of
+# direction -> the door that blocks it. Adding a room is only adding an entry.
 ROOMS = {
     "clearing": {
         "name": "Forest clearing",
@@ -62,6 +64,7 @@ ROOMS = {
 }
 
 # Items: where they start, what they are called, what they weigh in the player's mind (can they be taken), and text.
+# Every item: its starting room (`where`, None if it only appears later), the names a player may use (the first is the one shown), its description, and whether it can be taken.
 ITEMS = {
     "lamp": {
         "where": "clearing",
@@ -108,6 +111,7 @@ ITEMS = {
 }
 
 # Things the player can type that are not movement. Each is a short rule written as data.
+# Words the parser treats as the same verb or direction: single letters, and alternative verbs such as get/grab/pick for take.
 SYNONYMS = {
     "n": "north", "s": "south", "e": "east", "w": "west", "u": "up", "d": "down",
     "x": "examine", "look": "look", "l": "look", "i": "inventory", "inv": "inventory",
@@ -116,7 +120,10 @@ SYNONYMS = {
     "q": "quit", "quit": "quit", "exit": "quit",
 }
 
+# The words that mean movement; a line starting with one of these is a "go" command.
 DIRECTIONS = ["north", "south", "east", "west", "up", "down", "in", "out"]
 
+# The room the player starts in.
 START = "clearing"
+# The game ends after this many turns, win or not.
 MAX_TURNS = 200

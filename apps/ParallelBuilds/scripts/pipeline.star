@@ -6,12 +6,14 @@
 # script itself stays one plain, single-threaded program.
 
 # name, how long the build takes in milliseconds, and whether it is rigged to fail (for the broken run).
+# The three builds of the demo: component name, how long the (simulated) build takes in milliseconds, and whether it is made to fail.
 PLAN = [
     ("core", 700, False),
     ("web", 1100, False),
     ("docs", 500, False),
 ]
 
+# The same plan with the web build failing, to show a release being blocked.
 PLAN_BROKEN = [
     ("core", 700, False),
     ("web", 1100, True),
@@ -32,6 +34,7 @@ def build_parallel(plan):
 
 # ---------------------------------------------------------------- the pipeline
 
+# Print one line per build result: name, ok or FAILED, how long it took, and its log line.
 def report(results):
     for r in results:
         print("  %-5s %-6s %4d ms  %s" % (r.name, "ok" if r.ok else "FAILED", r.millis, r.log))
@@ -53,12 +56,15 @@ def release(plan):
 def serial():
     return len(build_serial(PLAN))
 
+# Entry point for the host: build the plan all at once, return how many builds ran.
 def parallel():
     return len(build_parallel(PLAN))
 
+# Entry point for the host: a release where every build works.
 def good_release():
     return release(PLAN)
 
+# Entry point for the host: a release with one failing build, which is blocked.
 def broken_release():
     return release(PLAN_BROKEN)
 

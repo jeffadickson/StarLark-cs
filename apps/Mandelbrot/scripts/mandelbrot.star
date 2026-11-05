@@ -7,6 +7,7 @@
 # Starlark has no math module, which keeps scripts deterministic, so the smooth colouring below uses a small log2
 # approximation written in the script itself.
 
+# The most iterations tried for one point. A point that has not escaped by then is treated as inside the set (drawn black).
 MAX_ITER = 400
 
 # Colour stops (position 0..1, red, green, blue), a cycle that returns to its first colour. Deep ocean blue, cyan, white
@@ -22,6 +23,7 @@ STOPS = [
     (1.00, 5, 10, 60),
 ]
 
+# Characters from light to dense, used for the plain (no colour) picture. The last, "@", is also used for points inside the set.
 RAMP = " .,:;-=+*%#@"
 
 # ---------------------------------------------------------------- numbers
@@ -59,6 +61,8 @@ def smooth(cx, cy):
 
 # ---------------------------------------------------------------- colour
 
+# The colour for a smooth iteration count `mu`: black inside the set, otherwise a position `t` along the cycle (one trip round the STOPS every `cycle` iterations)
+# blended linearly between the two stops either side of it. Returns (red, green, blue), each 0 to 255.
 def colour(mu, cycle):
     if mu < 0.0:
         return (0, 0, 0)
@@ -75,6 +79,7 @@ def colour(mu, cycle):
             )
     return (STOPS[0][1], STOPS[0][2], STOPS[0][3])
 
+# The ANSI escape sequence that sets the foreground (kind "38") or background (kind "48") to a 24-bit colour `c`.
 def sgr(kind, c):
     return "\x1b[" + kind + ";2;" + str(c[0]) + ";" + str(c[1]) + ";" + str(c[2]) + "m"
 
@@ -89,14 +94,17 @@ def render_row(job):
     step = job[5]
     ansi = job[6]
     cycle = job[7]
+    # Each text row draws two pixel rows: the upper pixel (the half-block's foreground) and the lower one (its background), a half step apart in the plane.
     cy_top = top - (2 * row) * step
     cy_bot = top - (2 * row + 1) * step
     out = []
+    # For each character cell: work out both of its points and pick the output, either a half-block with two true colours or one character from RAMP.
     for col in range(width):
         cx = left + col * step
         a = smooth(cx, cy_top)
         b = smooth(cx, cy_bot)
         if ansi:
+            # A half block "▀" is drawn in the foreground colour on its top half; the background colour shows through on the bottom half. So one cell carries two pixels.
             out.append(sgr("38", colour(a, cycle)) + sgr("48", colour(b, cycle)) + "▀")
         else:
             m = (a + b) / 2.0

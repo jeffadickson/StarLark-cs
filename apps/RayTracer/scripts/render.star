@@ -6,21 +6,27 @@
 
 # ---------------------------------------------------------------- vectors (tuples of three floats)
 
+# Add two vectors (three-item tuples).
 def add(a, b):
     return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
 
+# Subtract the second vector from the first.
 def sub(a, b):
     return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
 
+# Scale a vector by the number k.
 def mul(a, k):
     return (a[0] * k, a[1] * k, a[2] * k)
 
+# The dot product of two vectors.
 def dot(a, b):
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
+# The length of a vector.
 def length(a):
     return sqrt(dot(a, a))
 
+# The vector scaled to length 1 (the same direction).
 def unit(a):
     n = length(a)
     return (a[0] / n, a[1] / n, a[2] / n)
@@ -36,6 +42,7 @@ def sqrt(x):
 
 # ---------------------------------------------------------------- the scene
 
+# The scene is only spheres: centre, radius, brightness (0 to 1) and how mirror-like it is (0 to 1).
 SPHERES = [
     # centre, radius, brightness 0..1, how mirror-like 0..1
     ((0.0, -0.2, 5.0), 1.2, 0.95, 0.35),
@@ -43,12 +50,15 @@ SPHERES = [
     ((2.2, -0.6, 4.4), 0.8, 0.80, 0.50),
     ((0.0, -1001.4, 0.0), 1000.0, 0.55, 0.20),     # the floor is a very large sphere
 ]
+# Position of the single light.
 LIGHT = (-4.0, 6.0, 0.0)
+# Position of the camera.
 EYE = (0.0, 0.2, -1.5)
 
 # Characters from dark to bright. The picture is shown as ASCII art.
 RAMP = " .:-=+*#%@"
 
+# Where a ray meets a sphere: the distance along the ray to the nearer intersection in front of the origin, or -1.0 for a miss. Solves the ray-sphere quadratic; hits closer than 0.001 are ignored so a ray does not hit the surface it just left.
 def hit_sphere(origin, direction, sphere):
     # Returns the distance along the ray to the sphere, or -1.0 if it misses.
     oc = sub(origin, sphere[0])
@@ -60,6 +70,7 @@ def hit_sphere(origin, direction, sphere):
     t = -b - sqrt(disc)
     return t if t > 0.001 else -1.0
 
+# The closest sphere a ray hits. Returns (distance, index of the sphere), or (-1.0, -1) if it hits none.
 def nearest(origin, direction):
     best = -1.0
     which = -1
@@ -70,6 +81,7 @@ def nearest(origin, direction):
             which = i
     return best, which
 
+# The brightness (0 to about 1) seen along a ray. Hits the nearest sphere, lights it by the angle to the light (dimmed to 35% if something is in the way, which gives shadows), then follows the reflection for `depth` more bounces. Written as a loop because Starlark does not allow recursion.
 def shade(origin, direction, depth):
     # Starlark forbids recursion, so reflections are a loop: each bounce adds a mirror-weighted share of the light
     # seen from the next hit, and `weight` is how much of the final colour that bounce still contributes.
@@ -100,6 +112,7 @@ def shade(origin, direction, depth):
         direction = unit(sub(direction, mul(normal, 2.0 * dot(direction, normal))))
     return total
 
+# One picture row, as a string with one character per pixel. Works out the ray for each pixel from the row and column, shades it, and picks a character from RAMP. This is one task for parallel_map.
 def render_row(job):
     # job is (row, width, height). The result is a string of characters, one per pixel.
     row = job[0]
@@ -116,6 +129,7 @@ def render_row(job):
         out.append(RAMP[n])
     return "".join(out)
 
+# The picture as a list of row strings. Each row is independent, so parallel_map computes them side by side and returns them in order.
 def render(width, height):
     jobs = [(row, width, height) for row in range(height)]
     return parallel_map(render_row, jobs)
