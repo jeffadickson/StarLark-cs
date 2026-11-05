@@ -33,6 +33,18 @@ public sealed record FutureLimits
 
     /// <summary>How long a run waits for tasks to stop when it ends.</summary>
     public TimeSpan GracePeriod { get; init; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Run each task to completion on the spawning thread, at the moment it is started, instead of on worker threads. The
+    /// results, errors and printed output are the same either way, because a task never sees the spawner's variables and its
+    /// output is joined in program order; only the wall-clock overlap is lost. <c>null</c> (the default) chooses automatically:
+    /// inline on platforms that cannot start threads (browser WebAssembly and WASI), worker threads everywhere else.
+    /// A host function registered <c>asFuture</c> still returns a future, but inline mode waits for each one in turn.
+    /// </summary>
+    public bool? RunInline { get; init; }
+
+    /// <summary>True when this platform cannot start threads, so tasks must run inline.</summary>
+    public static bool ThreadsUnavailable => OperatingSystem.IsBrowser() || OperatingSystem.IsWasi();
 }
 
 /// <summary>What happened in a run, for the host.</summary>
@@ -72,7 +84,11 @@ internal sealed class FutureRun : IDisposable
         // A dedicated, bounded set of threads, started on demand: script tasks never use the shared thread pool, so a
         // blocked task cannot starve the host, and tasks queue (rather than block the spawner) when every worker is busy.
         _maxWorkers = Math.Clamp(limits.MaxConcurrency, 1, FutureLimits.MaxWorkersCeiling);
+        _inline = limits.RunInline ?? FutureLimits.ThreadsUnavailable;
     }
+
+    /// <summary>True if tasks run on the spawning thread (see <see cref="FutureLimits.RunInline"/>).</summary>
+    private readonly bool _inline;
 
     private void EnsureWorker()
     {
@@ -152,6 +168,13 @@ internal sealed class FutureRun : IDisposable
         var context = parent.ForTask(slice, _token);
         future.Context = context;
         future.Slice = slice;
+        if (_inline)
+        {
+            // No worker threads: run the task now, on this thread. It has its own execution context, which RunTask enters
+            // and leaves, so the spawner's context is restored afterwards exactly as it was.
+            RunTask(future, context, body);
+            return future;
+        }
         _queue.Add(() => RunTask(future, context, body));
         EnsureWorker();
         return future;
