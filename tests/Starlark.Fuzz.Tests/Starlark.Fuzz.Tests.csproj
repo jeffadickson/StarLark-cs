@@ -18,6 +18,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Starlark.Eval\Starlark.Eval.csproj" />
+    <!-- The BASIC interpreter (an interpreter written in Starlark) is fuzzed too: it takes free-typed user input. -->
+    <ProjectReference Include="..\..\apps\Basic\Basic.csproj" />
   </ItemGroup>
 
   <ItemGroup>

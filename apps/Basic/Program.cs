@@ -225,6 +225,13 @@ public static class Program
                     output.WriteLine($"?INTERNAL ERROR: {e.RawMessage}");
                     status = machine.Recover();
                 }
+                catch (ExecutionLimitException e)
+                {
+                    // A program that burns through the step, time or memory budget in one slice is stopped like BREAK, not allowed to end the session.
+                    output.Write(machine.TakeOutput());
+                    output.WriteLine($"BREAK ({e.Limit} limit)");
+                    status = machine.Recover();
+                }
                 output.Write(machine.TakeOutput());
                 output.Flush();
             }
