@@ -11,6 +11,15 @@ public static class Ops
 
     private static bool IsNum(object? v) => v is BigInteger or double;
 
+    private const int BoxMin = -256, BoxMax = 1023;
+    private static readonly object[] SmallInts = Enumerable.Range(BoxMin, BoxMax - BoxMin + 1).Select(i => (object)new BigInteger(i)).ToArray();
+
+    /// <summary>
+    /// Boxes an int result, sharing one pre-built box for the small values (-256 to 1023) that loop counters, indexes and
+    /// small sums produce, so the common case allocates nothing. Values are immutable, so sharing is invisible to scripts.
+    /// </summary>
+    public static object Box(BigInteger v) => v >= BoxMin && v <= BoxMax ? SmallInts[(int)v - BoxMin] : v;
+
     /// <summary>
     /// Converts an int to the nearest double, rounding ties to even. <c>(double)BigInteger</c> truncates instead,
     /// which disagrees with the reference implementations for values above 2^53.
@@ -291,7 +300,7 @@ public static class Ops
     {
         switch (a, b)
         {
-            case (BigInteger x, BigInteger y): return x + y;
+            case (BigInteger x, BigInteger y): return Box(x + y);
             case (string x, string y): MemoryBudget.CheckElements((long)x.Length + y.Length, 2); return x + y;
             case (StarUtf16 x, StarUtf16 y): return new StarUtf16(x.Value + y.Value);
             case (StarBytes x, StarBytes y): return new StarBytes([.. x.Value, .. y.Value]);
@@ -304,7 +313,7 @@ public static class Ops
 
     public static object? Subtract(object? a, object? b)
     {
-        if (a is BigInteger x && b is BigInteger y) return x - y;
+        if (a is BigInteger x && b is BigInteger y) return Box(x - y);
         if (IsNum(a) && IsNum(b)) return ToDouble(a) - ToDouble(b);
         if (a is StarSet s1 && b is StarSet s2) return SetDifference(s1, s2);
         throw Err.Unsupported("-", a, b);
@@ -342,7 +351,7 @@ public static class Ops
 
     public static object? Multiply(object? a, object? b)
     {
-        if (a is BigInteger x && b is BigInteger y) return x * y;
+        if (a is BigInteger x && b is BigInteger y) return Box(x * y);
         if (IsNum(a) && IsNum(b)) return ToDouble(a) * ToDouble(b);
         if (b is BigInteger n && Repeat(a, n) is { } r1) return r1;
         if (a is BigInteger m && Repeat(b, m) is { } r2) return r2;
@@ -364,7 +373,7 @@ public static class Ops
             if (y.IsZero) throw new StarlarkException("Integer division by zero");
             var q = BigInteger.DivRem(x, y, out var rem);
             if (!rem.IsZero && (rem.Sign < 0) != (y.Sign < 0)) q -= 1;
-            return q;
+            return Box(q);
         }
         if (IsNum(a) && IsNum(b))
         {
@@ -384,7 +393,7 @@ public static class Ops
             if (y.IsZero) throw new StarlarkException("Integer modulo by zero");
             var r = BigInteger.Remainder(x, y);
             if (!r.IsZero && (r.Sign < 0) != (y.Sign < 0)) r += y;
-            return r;
+            return Box(r);
         }
         if (IsNum(a) && IsNum(b))
         {
@@ -477,7 +486,7 @@ public static class Ops
     private static IEnumerable<object?> IterateRange(StarRange r)
     {
         var n = r.Count;
-        for (BigInteger i = 0; i < n; i++) yield return r[i];
+        for (BigInteger i = 0; i < n; i++) yield return Box(r[i]);
     }
 
     private static IEnumerable<object?> IterLocked(Mutable m, Func<IEnumerable<object?>> source)
