@@ -1,0 +1,48 @@
+<!doctype html>
+<!-- A page with no interface: it runs a fixed set of programs through the WebAssembly build and writes PASS or FAIL lines.
+     Used by tools/WebCheck (headless browser) to prove the browser build works. -->
+<html><head><meta charset="utf-8"><title>playground self test</title></head>
+<body><pre id="out">running</pre>
+<script type="module">
+import { boot } from "./starlark.js";
+const out = document.getElementById("out");
+const lines = [];
+function check(name, got, want) {
+  const ok = got === want;
+  lines.push((ok ? "PASS " : "FAIL ") + name + (ok ? "" : "  got " + JSON.stringify(got) + " want " + JSON.stringify(want)));
+}
+try {
+  const sl = await boot();
+  let r = sl.run("print(sorted([3, 1, 2]))", "");
+  check("sorted", r.output, "[1, 2, 3]\n");
+  r = sl.run("def sq(x):\n    return x * x\nprint(parallel_map(sq, range(6)))\nf = spawn(sq, 7)\nprint(f.get())\n", "futures");
+  check("futures", r.output, "[0, 1, 4, 9, 16, 25]\n49\n");
+  r = sl.run("def f(n):\n    return 1 if n <= 1 else n * f(n - 1)\nprint(f(20))\n", "recursion");
+  check("recursion", r.output, "2432902008176640000\n");
+  r = sl.run("def f(n):\n    return f(n)\nf(1)\n", "");
+  check("recursion is an error by default", r.error !== null && r.error.includes("recursively"), true);
+  r = sl.run("def spin():\n    x = 0\n    for i in range(100000000):\n        x += i\n    return x\nspin()\n", "");
+  check("runaway loop is stopped", r.error !== null && r.error.startsWith("limit reached (steps)"), true);
+  r = sl.run("def f(x: int) -> str:\n    return x\n", "check");
+  check("type checker", r.error !== null && r.output.startsWith("type error:"), true);
+  r = sl.run('print(len("héllo"), len("😀"))', "");
+  check("utf-8 elements", r.output, "6 4\n");
+  r = sl.run('print(json.encode({"a": [1, 2.5, None]}))', "");
+  check("json", r.output, '{"a":[1,2.5,null]}\n');
+  r = sl.run("load('std/approx_math.star', s = 'sqrt')\nprint(abs(s(2.0) - sqrt(2.0)) < 1e-15, floor(2.7), round(2.5))\n", "");
+  check("std lib and native math", r.output, "True 2 2\n");
+  const banner = sl.basicReset();
+  check("basic boots", banner.includes("READY"), true);
+  let b = sl.basicType("PRINT 2+3*4");
+  check("basic prints", b.output.includes(" 14 "), true);
+  sl.basicLoad("sine");
+  b = sl.basicType("RUN");
+  while (b.status === "budget") b = sl.basicContinue();
+  check("basic runs a program", b.output.length > 200, true);
+} catch (e) {
+  lines.push("FAIL exception " + e);
+}
+lines.push(lines.every(l => !l.startsWith("FAIL")) ? "ALL PASSED" : "SOME FAILED");
+out.textContent = lines.join("\n");
+document.title = lines[lines.length - 1];
+</script></body></html>

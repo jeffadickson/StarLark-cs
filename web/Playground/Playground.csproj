@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk.WebAssembly">
+
+  <!-- The browser playground: the real Starlark.Eval library, compiled to WebAssembly, running Starlark programs and the Level II
+       BASIC machine entirely in the page. Build with `dotnet publish web/Playground -c Release -o <folder>`, then serve
+       <folder>/wwwroot with tools/Serve. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Trim the framework (most of it is never used: XML, data, cryptography) but keep the Starlark assemblies whole, because the
+         interop layer finds host members by reflection, which the trimmer cannot follow. -->
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>partial</TrimMode>
+    <SuppressTrimAnalysisWarnings>true</SuppressTrimAnalysisWarnings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <WasmEnableThreads>false</WasmEnableThreads>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <TrimmerRootAssembly Include="Starlark.Eval" />
+    <TrimmerRootAssembly Include="Starlark.Syntax" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Starlark.Eval\Starlark.Eval.csproj" />
+    <ProjectReference Include="..\..\src\Starlark.Syntax\Starlark.Syntax.csproj" />
+    <!-- The BASIC machine is an executable project, which a WebAssembly app cannot reference, so its two classes and its
+         scripts and programs are compiled in from source here. -->
+    <Compile Include="..\..\apps\Basic\Machine.cs" Link="Basic\Machine.cs" />
+    <Compile Include="..\..\apps\Basic\Scripts.cs" Link="Basic\Scripts.cs" />
+    <EmbeddedResource Include="..\..\apps\Basic\scripts\**\*.star" LogicalName="scripts/%(RecursiveDir)%(Filename)%(Extension)" />
+    <EmbeddedResource Include="..\..\apps\Basic\programs\**\*.bas" LogicalName="programs/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

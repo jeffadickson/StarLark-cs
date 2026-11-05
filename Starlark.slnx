@@ -28,5 +28,7 @@
     <Project Path="tools/CommentCheck/CommentCheck.csproj" />
     <Project Path="tools/PrettyPrint/PrettyPrint.csproj" />
     <Project Path="tools/ExampleSync/ExampleSync.csproj" />
+    <Project Path="tools/Serve/Serve.csproj" />
+    <Project Path="tools/WebCheck/WebCheck.csproj" />
   </Folder>
 </Solution>
