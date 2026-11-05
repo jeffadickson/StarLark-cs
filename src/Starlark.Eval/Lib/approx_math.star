@@ -18,7 +18,7 @@
 # log are within a few. pow is computed as repeated multiplication for a whole exponent up to 64 and otherwise as
 # exp(y * log(x)), whose error grows with |y * log(x)|. The native versions in the host use System.Math.
 #
-# Accuracy limits: sin and cos reduce the argument with a three part value of pi/2, which is exact for |x| below about
+# Accuracy limits: sin and cos reduce the argument with a four part value of pi/2 (three exact pieces and a tail), which is exact for |x| below about
 # 1.6 million. Beyond that the error grows with |x| (the reduction has to be done in far more digits to stay exact).
 
 pi = 3.141592653589793

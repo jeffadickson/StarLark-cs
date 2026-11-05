@@ -1,8 +1,8 @@
 # The tokenizer for TRS-80 Level II BASIC.
 #
 # It follows the real machine on purpose: keywords are recognised anywhere in a line, even in the middle of a name, so
-# FORI=1TO10 works with no spaces and so does the famous trap that a variable called TOTAL is read as TO T AL. Names have
-# two significant characters. Everything outside a string is case-insensitive.
+# FORI=1TO10 works with no spaces and so does the famous trap that a variable called TOTAL is read as the keyword TO followed by the variable TAL. Names have
+# two significant characters. Everything outside a string is case-insensitive (REM and ' comment text and DATA text keep their case).
 #
 # A token is a tuple whose first item says what it is:
 #   ("n", value)               a number (int, single float, or a double held in a 1-tuple, see numbers.star)
@@ -26,7 +26,7 @@ KEYWORDS = [
     "POINT", "MEM", "INKEY$", "ERL", "ERR",
 ]
 
-# Group the keywords by first letter, longest first, so keyword_at tries STRING$ before STR and INT before IN.
+# Group the keywords by first letter, longest first, so keyword_at tries STRING$ before STR$ and INPUT before INP.
 def _index_keywords():
     index = {}
     # Longest first, so that STRING$ is not read as STR and INT is not read as IN.

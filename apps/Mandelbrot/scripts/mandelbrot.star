@@ -23,7 +23,7 @@ STOPS = [
     (1.00, 5, 10, 60),
 ]
 
-# Characters from light to dense, used for the plain (no colour) picture. The last, "@", is also used for points inside the set.
+# Characters from light to dense, used for the plain (no colour) picture. The last, "@", is reserved for cells where either point is inside the set.
 RAMP = " .,:;-=+*%#@"
 
 # ---------------------------------------------------------------- numbers
@@ -94,7 +94,7 @@ def render_row(job):
     step = job[5]
     ansi = job[6]
     cycle = job[7]
-    # Each text row draws two pixel rows: the upper pixel (the half-block's foreground) and the lower one (its background), a half step apart in the plane.
+    # Each text row draws two pixel rows: the upper pixel (the half-block's foreground) and the lower one (its background), one pixel step apart in the plane (a text cell is two steps tall).
     cy_top = top - (2 * row) * step
     cy_bot = top - (2 * row + 1) * step
     out = []
@@ -121,7 +121,7 @@ def render_row(job):
 def render(width, height, cx, cy, span, ansi, cycle):
     step = span / width
     left = cx - span / 2.0
-    # 2*height pixel rows centred on cy: the first sits half a pixel above the last one's mirror image.
+    # 2*height pixel rows centred on cy: the first row is (height - 0.5) steps above cy and the last is its mirror image below.
     top = cy + step * (height - 0.5)
     jobs = [(r, width, height, left, top, step, ansi, cycle) for r in range(height)]
     return parallel_map(render_row, jobs)

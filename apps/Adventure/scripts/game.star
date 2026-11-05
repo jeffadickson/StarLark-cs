@@ -1,4 +1,4 @@
-# The rules. `step(state, line)` takes the game state and one line the player typed, and returns the new state and
+# The rules. `step(state, line)` takes the game state and one line the player typed, changes the state in place, and returns
 # the words to show. State is a plain dict; nothing here prints, so the same code runs in a terminal and in a test.
 
 load("world.star", "ROOMS", "ITEMS", "SYNONYMS", "DIRECTIONS", "START", "MAX_TURNS")

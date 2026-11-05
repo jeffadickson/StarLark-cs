@@ -241,7 +241,7 @@ def is_op(toks, p, op):
 def is_kw(toks, p, word):
     return p < len(toks) and toks[p][0] == "k" and toks[p][1] == word
 
-# The line number written at toks[p] (a GOTO target, say) as an int, or -1 if that token is not a plain integer.
+# The line number written at toks[p] (a GOTO target, say) as an int, or -1 if the token is not a number or is a double precision number (any other number is rounded down).
 def line_number(toks, p):
     if p >= len(toks) or toks[p][0] != "n":
         return -1
@@ -309,7 +309,7 @@ def number_arg(v):
 
 # ---------------------------------------------------------------- statements
 
-# PRINT. Handles `@ position`, USING, and the separators: ";" joins, "," moves to the next 16-column field (or the next line past column 48),
+# PRINT. Handles `@ position`, USING, and the separators: ";" joins, "," moves to the next 16-column field (or the next line from column 48 on),
 # TAB( and SPC(. A newline is printed at the end unless the statement ends in ; or ,. Numbers print with a leading sign slot and a trailing space.
 def st_print(st, toks, pos):
     n = len(toks)
@@ -506,7 +506,7 @@ def st_else(st, toks, pos):
     return next_line(st)
 
 # FOR v = start TO limit [STEP s]. Sets the variable and pushes a loop frame (variable, limit, step, line, position). Starting a FOR on a
-# variable that already has a frame replaces that frame, which also discards any loops nested inside it. At most 100 loops ("OM").
+# variable that already has a frame removes that old frame and pushes the new one on top; other frames are left alone (NEXT is what discards inner loops). At most 100 loops ("OM").
 def st_for(st, toks, pos):
     t = parse_target(st, toks, pos)
     if t[3] != "":

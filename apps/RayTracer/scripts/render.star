@@ -58,7 +58,7 @@ EYE = (0.0, 0.2, -1.5)
 # Characters from dark to bright. The picture is shown as ASCII art.
 RAMP = " .:-=+*#%@"
 
-# Where a ray meets a sphere: the distance along the ray to the nearer intersection in front of the origin, or -1.0 for a miss. Solves the ray-sphere quadratic; hits closer than 0.001 are ignored so a ray does not hit the surface it just left.
+# Where a ray meets a sphere: the distance along the ray to the nearer intersection if that is in front of the origin, else -1.0 (a ray that starts inside a sphere counts as a miss). Solves the ray-sphere quadratic; hits closer than 0.001 are ignored so a ray does not hit the surface it just left.
 def hit_sphere(origin, direction, sphere):
     # Returns the distance along the ray to the sphere, or -1.0 if it misses.
     oc = sub(origin, sphere[0])

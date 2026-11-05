@@ -4,7 +4,7 @@
 # 16383, so PRINT @, POKE, PEEK, SET, RESET and POINT all work on one store. Codes 32 to 127 are text, and 128 to 191 are
 # graphics cells of 2 x 3 blocks (code 128 plus one bit per block).
 #
-# Everything printed is also appended to a plain text stream (st["out"]) so a terminal host can show it as it comes, and
+# Everything printed (unless st["quiet"] is set) is also appended to a plain text stream (st["out"]) so a terminal host can show it as it comes, and
 # the tests can read it without caring about the screen.
 
 load("numbers.star", "floor_int", "to_float", "kind_of", "overflows")

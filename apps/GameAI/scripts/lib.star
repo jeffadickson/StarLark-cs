@@ -19,7 +19,7 @@ def rest():
 def toward(me, foe):
     return 1 if foe.pos > me.pos else -1
 
-# How far apart two fighters are on the line (an absolute value; Starlark has no abs here to keep the example plain).
+# How far apart two fighters are on the line (an absolute value, written out by hand to keep the example plain; standard Starlark has no abs).
 def distance(a, b):
     d = a.pos - b.pos
     return d if d >= 0 else -d

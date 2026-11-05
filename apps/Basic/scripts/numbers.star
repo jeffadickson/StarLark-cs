@@ -51,7 +51,7 @@ def to_float(v):
         return v[0]
     return float(v)
 
-# Largest integer not greater than x, as an int (floor), safe for any float.
+# Largest integer not greater than x, as an int (floor), safe for any finite float (NaN gives 0; an infinity is an error).
 def floor_int(x):
     if x != x:
         return 0
@@ -316,7 +316,7 @@ def f_sqr(x):
         g = 0.5 * (g + x / g)
     return g
 
-# e**x, or None if it overflows a single.
+# e**x, or None for x above 88.7 (callers still check the result against the single precision limit), and 0.0 below -100.
 def f_exp(x):
     if x > 88.7:
         return None
@@ -433,6 +433,6 @@ def f_pow(x, y):
         return (0.0, "OV")
     return (r, "")
 
-# Next state of the pseudo random generator (a 31-bit linear congruential generator) and its value in [0, 1).
+# Next state of the pseudo random generator (a 31-bit linear congruential generator). RND turns the state into a value in [0, 1) itself.
 def rnd_next(seed):
     return (seed * 1103515245 + 12345) % 2147483648

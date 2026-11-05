@@ -102,7 +102,7 @@ def compile_expr(toks, pos):
     ops = []
     argc = []
     # `expect` is True when an operand (a value, "(", a function, NOT or a minus sign) must come next, and False after an operand, when an operator
-    # or a closing bracket must. It is what tells unary minus from binary minus, and catches errors like "3 4" and "3 +".
+    # or a closing bracket must. It is what tells unary minus from binary minus, which is how "3 +" is caught; "3 4" is left for the statement to reject, since the expression simply stops after the 3.
     expect = True
     # The loop is bounded by the number of tokens (each turn consumes at least one) because Starlark has no `while`.
     n = len(toks)
@@ -683,7 +683,7 @@ def eval_rpn(st, rpn):
             if r[1] != "":
                 return (None, r[1])
             stack.append(r[0])
-        # An array element: take the subscripts off the stack and look up the element (creating a 10-element array on first use, as BASIC does).
+        # An array element: take the subscripts off the stack and look up the element (creating an array with subscripts 0 to 10 in every dimension on first use, as BASIC does).
         elif tag == "arr":
             c = item[2]
             subs = stack[len(stack) - c:]
