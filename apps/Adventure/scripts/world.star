@@ -63,8 +63,8 @@ ROOMS = {
     },
 }
 
-# Items: where they start, what they are called, what they weigh in the player's mind (can they be taken), and text.
-# Every item: its starting room (`where`, None if it only appears later), the names a player may use (the first is the one shown), its description, and whether it can be taken.
+# Every item: its starting room (`where`, None if it only appears later), the names a player may use (the first is the one shown),
+# its description, and whether it can be taken.
 ITEMS = {
     "lamp": {
         "where": "clearing",
@@ -110,8 +110,8 @@ ITEMS = {
     },
 }
 
-# Things the player can type that are not movement. Each is a short rule written as data.
-# Words the parser treats as the same verb or direction: single letters, and alternative verbs such as get/grab/pick for take.
+# Words the parser treats as the same verb or direction: single letters (n, s, x, i), and alternative verbs such as get/grab/pick
+# for take. Each entry is a short rule written as data.
 SYNONYMS = {
     "n": "north", "s": "south", "e": "east", "w": "west", "u": "up", "d": "down",
     "x": "examine", "look": "look", "l": "look", "i": "inventory", "inv": "inventory",

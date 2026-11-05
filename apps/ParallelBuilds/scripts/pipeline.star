@@ -5,8 +5,7 @@
 # builds, and only waits when it needs the answers, with all_of() or get(). The three builds run side by side while the
 # script itself stays one plain, single-threaded program.
 
-# name, how long the build takes in milliseconds, and whether it is rigged to fail (for the broken run).
-# The three builds of the demo: component name, how long the (simulated) build takes in milliseconds, and whether it is made to fail.
+# The three builds of the demo: component name, how long the (simulated) build takes in milliseconds, and whether it is rigged to fail.
 PLAN = [
     ("core", 700, False),
     ("web", 1100, False),

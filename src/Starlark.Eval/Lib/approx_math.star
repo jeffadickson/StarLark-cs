@@ -80,6 +80,7 @@ _SIN_C = _build_sin()
 _COS_C = _build_cos()
 _EXP_C = _build_exp()
 
+# Validate an argument: it must be an int or a float, otherwise fail with "name: got TYPE, want float or int". Returns it as a float. Every public function starts with this.
 def _check(name, x):
     t = type(x)
     if t != "float" and t != "int":
@@ -110,6 +111,7 @@ def _ldexp(x, k):
     h = k // 2
     return _scale(_scale(x, h), k - h)
 
+# Multiply x by 2**k using the bits of k: one multiplication (or division, for a negative k) per set bit, by the exact table value _BIG[j] = 2**(2**j). Exact, because multiplying by a power of two never rounds.
 def _scale(x, k):
     if k >= 0:
         for j in range(0, 10):
@@ -225,9 +227,11 @@ def _reduce(x):
     r = r - f * _PIO2_4
     return (n, r)
 
+# The sine of a reduced argument |r| <= pi/4, as r times a polynomial in r*r (the Taylor series, evaluated by Horner's rule).
 def _ksin(r):
     return r * _horner(_SIN_C, r * r)
 
+# The cosine of a reduced argument |r| <= pi/4, as a polynomial in r*r.
 def _kcos(r):
     return _horner(_COS_C, r * r)
 
