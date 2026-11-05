@@ -344,4 +344,16 @@ a run under a single-thread synchronization context.
 <<<
 VERIFICATION: FuturesReviewRegressionTests, FuturesReview2Tests, FuturesAbuseTests
 
+
+[REQUIREMENT]
+UID: FUT-HOST-010
+STATUS: Implemented
+TITLE: Platforms without threads
+STATEMENT: >>>
+On a platform that cannot start threads (browser WebAssembly, WASI), tasks shall run inline on the spawning thread, and a
+program shall give the same results, errors and printed output as with worker threads. A host shall be able to choose
+inline mode on any platform.
+<<<
+VERIFICATION: InlineFuturesTests (every futures example program run both ways); the playground self test in a browser
+
 [/SECTION]

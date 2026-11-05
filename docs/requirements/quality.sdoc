@@ -193,22 +193,25 @@ VERIFICATION: docs/DEVIATIONS.md
 
 [REQUIREMENT]
 UID: QA-DOC-002
-STATUS: Open
+STATUS: Implemented
 TITLE: Embedding guide and example applications
 STATEMENT: >>>
 There shall be an embedding guide and runnable example applications that show host functions, object exposure, loading,
 limits, type checking and error reporting, with automated tests.
 <<<
-COMMENT: Five example applications are being written under apps/.
+VERIFICATION: ManualTests (every code sample in docs/MANUAL.md and README.md is run), AppTests
+COMMENT: The guide is docs/MANUAL.md; docs/site/deep-dive.html explains the implementation with live examples, checked in a headless browser by tools/BuildSite --check.
 
 [REQUIREMENT]
 UID: QA-DOC-003
-STATUS: Open
+STATUS: Implemented
 TITLE: Requirements traceability
 STATEMENT: >>>
 Every Implemented requirement shall name a verifying test, and a check shall fail the build when a named test does not
 exist.
 <<<
+VERIFICATION: tools/Trace (exit code 1 when an Implemented requirement names no existing test)
+COMMENT: Trace is a tool run by hand, not yet part of a build: wiring it into CI belongs to QA-PKG-002.
 
 [REQUIREMENT]
 UID: QA-PKG-001

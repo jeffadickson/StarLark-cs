@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Starlark for .NET: an implementation deep dive</title>
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<header class="hero">
+  <p class="eyebrow">starlark-cs &middot; release candidate 1</p>
+  <h1>Starlark for .NET</h1>
+  <p class="lede">A complete implementation of the Starlark language in C#, with a static type checker, deterministic
+  parallelism, and a robustness rule that no input may crash the host. Every example on this page runs in your browser,
+  on the same interpreter compiled to WebAssembly.</p>
+  <p class="status" id="boot-status">Loading the interpreter&hellip;</p>
+</header>
+
+<nav class="toc" aria-label="Contents">
+  <ol>
+    <li><a href="#why">Why a C# implementation</a></li>
+    <li><a href="#pipeline">From text to result</a></li>
+    <li><a href="#values">Values</a></li>
+    <li><a href="#evaluator">The evaluator</a></li>
+    <li><a href="#limits">Budgets and robustness</a></li>
+    <li><a href="#futures">Futures</a></li>
+    <li><a href="#types">Types and the static checker</a></li>
+    <li><a href="#strings">Strings</a></li>
+    <li><a href="#stdlib">The standard library</a></li>
+    <li><a href="#basic">A BASIC interpreter written in Starlark</a></li>
+    <li><a href="#testing">How it is tested</a></li>
+    <li><a href="#performance">Performance</a></li>
+    <li><a href="#enhancements">What this implementation adds</a></li>
+    <li><a href="#playground">Playground</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<section id="why">
+<h2>1. Why a C# implementation</h2>
+<p>Starlark has three mature implementations: Go (used by many tools), Java (inside Bazel) and Rust (from Meta). A .NET
+application that wanted Starlark had to host one of them out of process, or call native code. A native C# implementation
+changes what an embedding looks like:</p>
+<div class="grid">
+  <div class="card"><h3>Values are CLR objects</h3><p>A Starlark <code>int</code> is a <code>BigInteger</code>, a string is a
+  <code>string</code>, <code>None</code> is <code>null</code>. Results come back without marshalling, and host data goes in
+  the same way.</p></div>
+  <div class="card"><h3>Typed host functions</h3><p><code>it.Register("add", (int a, int b) =&gt; a + b)</code> is the whole
+  binding. Arguments are converted by C# parameter type, defaults are honoured, and the static checker reads the C#
+  signature.</p></div>
+  <div class="card"><h3><code>async</code> becomes futures</h3><p>A host function that returns a <code>Task</code> can hand
+  the script a future, so a script can keep several I/O operations in flight, with a cap the host sets.</p></div>
+  <div class="card"><h3>One runtime, every platform</h3><p>The same assemblies run on Windows, Linux and macOS servers, in
+  desktop apps, and, as this page shows, in a browser through WebAssembly.</p></div>
+  <div class="card"><h3>.NET tooling</h3><p>The debugger, profilers, NuGet, and the test stack (xUnit, FsCheck, Hedgehog,
+  Stryker.NET mutation testing) all apply directly.</p></div>
+  <div class="card"><h3>No native code</h3><p>Nothing to compile per platform, no unsafe interop boundary, and the whole
+  implementation is about 15,700 lines of C# you can read.</p></div>
+</div>
+</section>
+
+<section id="pipeline">
+<h2>2. From text to result</h2>
+<p>A program goes through four stages. The first two are a port of the Rust implementation's front end, so syntax errors
+and their positions match it; the last two were written from the specification.</p>
+<ol class="stages">
+  <li><b>Lexer</b> (<code>Starlark.Syntax/Lexer.cs</code>, <code>RawLexer.cs</code>). Produces tokens, including the
+  <code>INDENT</code>/<code>DEDENT</code> pair Python-style blocks need. It has a progress guard: a lexer that fails to
+  consume a character on an error stops instead of looping, which a fuzzer once found as an infinite loop on
+  <code>f'{:</code>.</li>
+  <li><b>Parser</b> (<code>Parser.cs</code>, 1,100 lines). Recursive descent into an immutable syntax tree
+  (<code>Ast.cs</code>); dialect switches decide which constructs are accepted.</li>
+  <li><b>Resolver</b> (<code>Starlark.Eval/Resolver.cs</code>). Static name binding, as the specification describes:
+  every name is classified as local, global, predeclared or universal before anything runs, so an undefined name is an
+  error even in code that never executes.</li>
+  <li><b>Evaluator</b> (<code>Interpreter.cs</code>). A tree-walking interpreter over the syntax tree.</li>
+</ol>
+<p>Try an undefined name inside a function that is never called. The resolver rejects the program before it starts:</p>
+<div data-expect="not found" class="example" data-options="">
+<pre class="code" contenteditable="true" spellcheck="false">def never_called():
+    return undefined_function()
+
+print("this line is never reached")</pre>
+</div>
+</section>
+
+<section id="values">
+<h2>3. Values</h2>
+<p>There is no boxing layer: values are ordinary CLR objects, and the type of a value is its .NET type.</p>
+<table>
+<tr><th>Starlark</th><th>.NET</th><th>Notes</th></tr>
+<tr><td><code>int</code></td><td><code>BigInteger</code></td><td>Arbitrary precision. Small results share pre-built boxes, so loop counters do not allocate.</td></tr>
+<tr><td><code>float</code></td><td><code>double</code></td><td>Printed like Go and Rust: the shortest text that round-trips.</td></tr>
+<tr><td><code>string</code></td><td><code>string</code></td><td>Elements are UTF-8 bytes by default (section 8).</td></tr>
+<tr><td><code>bool</code>, <code>None</code></td><td><code>bool</code>, <code>null</code></td><td></td></tr>
+<tr><td><code>list</code>, <code>dict</code>, <code>tuple</code>, <code>set</code></td><td><code>StarList</code>, <code>StarDict</code>, <code>StarTuple</code>, <code>StarSet</code></td><td>Each has a frozen flag; a dict keeps insertion order.</td></tr>
+<tr><td>function</td><td><code>StarFunction</code></td><td>Holds its syntax tree, closure and compiled parameter list.</td></tr>
+</table>
+<p><b>Freezing.</b> When a module finishes, everything it built is frozen, and mutating a frozen value is an error. That is
+what makes a loaded module safe to share between threads. Freezing, equality, hashing and <code>repr</code> are all
+cycle-safe, and recursion through nested containers is guarded by <code>StackGuard</code>, so a list that contains itself
+prints instead of overflowing the stack:</p>
+<div data-expect="96 digits" class="example" data-options="">
+<pre class="code" contenteditable="true" spellcheck="false">def make():
+    xs = [1, 2]
+    xs.append(xs)        # a list that contains itself
+    return xs
+
+print(make())
+
+def power_of_three(n):
+    big = 1
+    for _ in range(n):
+        big = big * 3
+    return big
+
+print(len(str(power_of_three(200))), "digits")   # ints have arbitrary precision</pre>
+</div>
+</section>
+
+<section id="evaluator">
+<h2>4. The evaluator</h2>
+<p>The evaluator walks the syntax tree. Two methods do almost all of the work: <code>ExecStmt</code> for statements, which
+returns a small <code>Flow</code> value (normal, break, continue, return) instead of throwing for control flow, and
+<code>EvalExpr</code> for expressions. Each function call gets a <code>Frame</code> holding its locals; the resolver has
+already decided which names are local, so a lookup never has to search outward through scopes at run time.</p>
+<p><b>Run state lives in an explicit execution context</b> (<code>ExecutionContext.cs</code>): the step counter, deadline,
+call depth, the set of functions on the stack (for the recursion check), the string mode, the memory budget and the call
+stack for error traces. Nothing about a run is kept in the <code>Interpreter</code> object or in static fields, which is
+what lets one frozen module be called from many threads, and lets each future task carry its own copy.</p>
+<p><b>Errors carry their location without cost on the happy path.</b> A runtime error is a <code>StarlarkException</code>.
+As it unwinds, an exception filter (not a catch) records the first source position it passes and each Starlark frame it
+leaves, so the trace is built during the first pass of exception handling with no rethrowing:</p>
+<div data-expect="Cannot parse `forty`" class="example" data-options="">
+<pre class="code" contenteditable="true" spellcheck="false">def parse(record):
+    return int(record["age"])
+
+def load_all(rows):
+    return [parse(r) for r in rows]
+
+load_all([{"age": "41"}, {"age": "forty"}])</pre>
+</div>
+</section>
+
+<section id="limits">
+<h2>5. Budgets and robustness</h2>
+<p>Starlark's design keeps scripts from touching the outside world. What a script can still do is use time and memory,
+so every run can carry budgets: <code>MaxSteps</code> (abstract steps, deterministic), <code>Timeout</code> (wall clock),
+<code>MaxAllocatedBytes</code> (memory) and a <code>CancellationToken</code>. Running out raises
+<code>ExecutionLimitException</code>, which no script can catch. This page gives every run 20 million steps, 10 seconds and
+256 MB. Here is a script that wants a billion steps:</p>
+<div data-expect="limit reached (steps)" class="example" data-options="">
+<pre class="code" contenteditable="true" spellcheck="false">def spin():
+    total = 0
+    for i in range(1000000000):
+        total += i
+    return total
+
+spin()</pre>
+</div>
+<p><b>No input may crash the host</b> (requirement QA-ROB-001). That is enforced, not hoped for:</p>
+<ul>
+  <li>Seeded fuzzers for the lexer, parser, interpreter, checker and the BASIC machine, run by the normal test suite and for
+  hours by <code>tools/Soak</code>, which runs each round in a child process under a hard heap limit and watches memory and
+  disk.</li>
+  <li>Exhaustive tests: every string up to a few characters over a small alphabet is fed to the lexer, the parser and the
+  BASIC expression evaluator.</li>
+  <li>Guards on every recursive path (nesting depth, call depth, cyclic values), on huge numbers (a shift by a billion is an
+  error, not an attempt), and on memory (string and list growth is checked before it happens).</li>
+</ul>
+<p>The first five-hour soak found 116 failing rounds and 6 hangs. All were fixed and each has a regression test.</p>
+</section>
+
+<section id="futures">
+<h2>6. Futures: parallelism without nondeterminism</h2>
+<p>Starlark is single-threaded by design, because shared mutable state is how programs become nondeterministic. This
+implementation adds parallelism in a form that keeps the language's guarantee: a program gives the same output however
+its tasks are scheduled.</p>
+<div data-expect="[111, 118, 178, 261]" class="example" data-options="futures">
+<pre class="code" contenteditable="true" spellcheck="false">def collatz_steps(n):
+    steps = 0
+    for _ in range(10000):
+        if n == 1:
+            break
+        n = n // 2 if n % 2 == 0 else 3 * n + 1
+        steps += 1
+    return steps
+
+# parallel_map: results always come back in input order.
+print(parallel_map(collatz_steps, [27, 97, 871, 6171]))
+
+# spawn / get / all_of for heterogeneous work.
+def describe(label, xs):
+    return "%s: %d items, max %d" % (label, len(xs), max(xs))
+
+f = spawn(describe, "evens", [2, 4, 6, 8])
+g = spawn(describe, "odds", [1, 3, 5])
+print(all_of([f, g]))</pre>
+</div>
+<p>The rules that make this deterministic were the result of a design review by four specialists (memory model,
+scheduling, language semantics, resource limits), who found the first draft unsound:</p>
+<table>
+<tr><th>Rule</th><th>Why</th></tr>
+<tr><td>Arguments are deep-copied, never frozen in place; aliasing between arguments is preserved.</td><td>Freezing the caller's
+list would change the caller's program. Copying means a task cannot race with the caller.</td></tr>
+<tr><td>A closure over a running function's variables cannot be spawned.</td><td>Those variables can be rebound while the task
+runs. The error tells the author to pass the value as an argument.</td></tr>
+<tr><td>Tasks cannot spawn or wait.</td><td>The task graph has depth one, so deadlock is impossible by construction.</td></tr>
+<tr><td>Output is buffered per task and joined in program order.</td><td>Printed text never interleaves.</td></tr>
+<tr><td><code>all_of</code> reports the lowest-index failure.</td><td>Not whichever task failed first in time.</td></tr>
+<tr><td>Each task gets a fixed slice of the step budget.</td><td>Which task runs out does not depend on timing.</td></tr>
+<tr><td>A future that is never collected is an error.</td><td>Silently cancelled work hides bugs.</td></tr>
+</table>
+<p>Isolation is visible from the script. The task appends to its own copy; the caller's list is unchanged:</p>
+<div data-expect="[3, [&quot;a&quot;, &quot;b&quot;, &quot;added by the caller&quot;]]" class="example" data-options="futures">
+<pre class="code" contenteditable="true" spellcheck="false">def grow(xs):
+    xs.append("added by the task")
+    return len(xs)
+
+def run():
+    mine = ["a", "b"]
+    f = spawn(grow, mine)
+    mine.append("added by the caller")
+    return [f.get(), mine]
+
+print(run())</pre>
+</div>
+<p><b>Host operations as futures.</b> In C#, a function that returns a <code>Task</code> can be registered with
+<code>asFuture: true</code>. The script then gets a future at once and can start several operations before waiting on any;
+<code>FutureLimits.MaxHostOperations</code> caps how many are in flight. The <code>ParallelBuilds</code> sample uses this to
+run three simulated builds side by side.</p>
+<p><b>In the browser.</b> WebAssembly here has no threads, so tasks run inline on the page's thread at the moment they are
+started. The test suite runs every futures example both ways and checks that output and errors are identical; only the
+wall-clock overlap is lost.</p>
+</section>
+
+<section id="types">
+<h2>7. Types and the static checker</h2>
+<p>With the types dialect, functions carry annotations that are checked at call time, and <code>record</code>,
+<code>enum</code> and <code>struct</code> give named data:</p>
+<div data-expect="does not match the type annotation" class="example" data-options="types">
+<pre class="code" contenteditable="true" spellcheck="false">Size = enum("S", "M", "L")
+Order = record(item = str, size = Size, qty = field(int, 1))
+
+def price(o: Order) -> int:
+    base = {"S": 3, "M": 4, "L": 5}[o.size.value]
+    return base * o.qty
+
+print(price(Order(item = "tea", size = Size("L"), qty = 2)))
+print(price(Order(item = "tea", size = Size("S"))))
+print(price("not an order"))</pre>
+</div>
+<p>The <b>static checker</b> (<code>TypeCheck/TypeChecker.cs</code>) infers types without running anything, so it finds the
+error in a branch that only runs on the first of the month. It knows the built-ins, the bundled packages and the C#
+signatures of host functions. This example is checked, not run:</p>
+<div data-expect="2 type error(s)" class="example" data-options="check">
+<pre class="code" contenteditable="true" spellcheck="false">def label(n: int) -> str:
+    if n > 1000000:
+        return n          # wrong type, in a branch tests may never reach
+    return "small"
+
+def total(xs: list[int]) -> int:
+    t = 0
+    for x in xs:
+        t += x
+    return t
+
+total(["1", "2"])</pre>
+</div>
+<p>The checker and the runtime are kept in agreement by property tests that generate programs, check them, run them, and
+require that a program the checker accepts never fails with a type error at run time.</p>
+</section>
+
+<section id="strings">
+<h2>8. Strings</h2>
+<p>The specification lets an implementation choose 8-bit or 16-bit string elements. This one defaults to UTF-8 bytes, as Go
+and Rust do, so offsets agree with them. .NET strings are UTF-16 inside, so the interpreter converts offsets on demand and
+caches the conversion; slicing in the middle of a multi-byte character is an error rather than producing a broken string.
+A host can choose UTF-16 elements instead (the BASIC machine does, because BASIC counts characters).</p>
+<div data-expect="17 bytes, 12 characters" class="example" data-options="">
+<pre class="code" contenteditable="true" spellcheck="false">s = "naïve café 😀"
+chars = list(s.codepoints())
+print(len(s), "bytes,", len(chars), "characters")
+print(chars[-1], "is code point", ord(chars[-1]))
+print(s[0:2], "is 'na'; s[0:3] would cut the two-byte 'ï' in half:")
+print(s[0:3])</pre>
+</div>
+</section>
+
+<section id="stdlib">
+<h2>9. The standard library</h2>
+<p>Beyond the specification's built-ins, the library adds a <code>json</code> module, the Go compatibility surface
+(<code>chr</code>, <code>ord</code>, <code>codepoints</code>, <code>module</code>), native elementary math (<code>sin</code>
+to <code>isinf</code>, backed by <code>System.Math</code>) and two packages written in Starlark itself:
+<code>std/approx_math.star</code> (the same math from series, identical on every platform) and <code>std/queue.star</code>
+(a first-in first-out queue with constant amortized time).</p>
+<div data-expect="-3 -2 2 4" class="example" data-options="">
+<pre class="code" contenteditable="true" spellcheck="false">load("std/approx_math.star", star_sin = "sin", star_sqrt = "sqrt")
+load("std/queue.star", "queue", "enqueue", "dequeue", "queue_len")
+
+print(sin(1.0), star_sin(1.0))      # native, then pure Starlark
+print(sqrt(2.0), star_sqrt(2.0))
+print(floor(-2.5), ceil(-2.5), round(2.5), round(3.5))
+
+q = queue(["first", "second"])
+enqueue(q, "third")
+print(dequeue(q), queue_len(q))
+print(json.encode_indent({"ok": True, "items": [1, 2]}))</pre>
+</div>
+</section>
+
+<section id="basic">
+<h2>10. A BASIC interpreter written in Starlark</h2>
+<p>The largest program in the repository is a TRS-80 Level II BASIC interpreter written in Starlark: about 2,600 lines of
+code and 1,000 lines of comments across six files. It tokenizes like the real machine (keywords are found anywhere, so
+<code>FORI=1TO10</code> works), compiles expressions to reverse Polish notation with a shunting-yard parser, emulates
+single and double precision, keeps a 16 by 64 screen as video memory, and implements the real key-by-key
+<code>EDIT</code> command. Starlark has no <code>while</code> and no recursion, so the interpreter runs as one flat,
+bounded loop over a single state dictionary, and the host gives it a slice of statements at a time. Here it is, running
+in this page:</p>
+<div class="basic">
+  <div class="basic-bar">
+    <label>Program <select id="basic-program"></select></label>
+    <button type="button" id="basic-load">Load and RUN</button>
+    <button type="button" id="basic-break">BREAK</button>
+    <button type="button" id="basic-reset">Reset</button>
+  </div>
+  <pre id="basic-screen" class="screen" aria-live="polite"></pre>
+  <form id="basic-form" class="basic-input"><span>&gt;</span><input id="basic-line" autocomplete="off" spellcheck="false"
+    aria-label="BASIC input" placeholder='type a line, e.g. 10 PRINT "HELLO"'></form>
+</div>
+</section>
+
+<section id="testing">
+<h2>11. How it is tested</h2>
+<table>
+<tr><th>Layer</th><th>What</th></tr>
+<tr><td>Conformance</td><td>The official test data of the Go, Java and Rust implementations, and the specification's own
+examples.</td></tr>
+<tr><td>Examples</td><td>122 programs in <code>examples/programs</code> state their expected output in comments and are run as
+tests; so are the samples in the manual.</td></tr>
+<tr><td>Real code</td><td>A corpus of 167 real Bazel and Starlark files is parsed and type checked.</td></tr>
+<tr><td>Properties</td><td>FsCheck and Hedgehog generate programs and values: futures agree with sequential execution, the
+checker agrees with the runtime, math functions never crash and agree across the native and Starlark versions.</td></tr>
+<tr><td>Fuzzing and soak</td><td>Seeded fuzzers in the suite; hours-long soaks in isolated, memory-capped child processes.</td></tr>
+<tr><td>Mutation testing</td><td>Stryker.NET mutates the operator and method code and reports surviving mutants.</td></tr>
+<tr><td>Traceability</td><td>Every requirement in <code>docs/requirements</code> (StrictDoc) names its tests, and
+<code>tools/Trace</code> fails if one is not covered.</td></tr>
+</table>
+<p>In all, about 2,800 tests run in under ten minutes.</p>
+</section>
+
+<section id="performance">
+<h2>12. Performance</h2>
+<p>A tree-walking interpreter is not the fastest design, and this one favours clarity and safety checks. Typical numbers
+from <code>bench/Starlark.Profile</code> on a desktop machine:</p>
+<table>
+<tr><th>Workload</th><th>Time per run</th></tr>
+<tr><td>90,000 iterations of nested integer loops</td><td>about 20 ms</td></tr>
+<tr><td>60,000 small function calls</td><td>about 30 ms</td></tr>
+<tr><td>6,000 string building and formatting rounds</td><td>about 13 ms</td></tr>
+<tr><td>Parsing a 1,000-line file</td><td>about 1 ms</td></tr>
+</table>
+<p>Two optimisations come from profiling: small integers share pre-built boxes (the loop workload allocates 41% less), and
+<code>sorted</code> on large lists of plain numbers or strings uses a parallel merge sort that gives exactly the same order as
+the sequential stable sort. The playground below reports the time and step count of each run.</p>
+</section>
+
+<section id="enhancements">
+<h2>13. What this implementation adds</h2>
+<ul class="adds">
+  <li><b>Futures</b> with deterministic results: <code>parallel_map</code>, <code>spawn</code>, <code>all_of</code>, and host
+  <code>Task</code> functions as futures with a cap on operations in flight.</li>
+  <li><b>A static type checker</b> that understands records, enums, structs, JSON, the bundled packages and C# host
+  signatures.</li>
+  <li><b>Budgets</b> for steps, time, memory and cancellation, all uncatchable by scripts.</li>
+  <li><b>Typed, attribute-driven interop</b>: <code>Register</code> for functions, <code>Expose</code> with
+  <code>[Expose]</code>/<code>[Hide]</code> for objects, <code>DefineValue</code> for data.</li>
+  <li><b>Go's Thread API</b> as <code>ScriptThread</code>: name, steps, call stack, thread locals for host functions.</li>
+  <li><b>Optional recursion</b> (Go's <code>option:recursion</code>) with a safe depth cap.</li>
+  <li><b>Native and pure-Starlark math</b>, a queue package, <code>json.encode_indent</code>, a <code>utf16</code> string type.</li>
+  <li><b>WebAssembly</b>: the same library runs in a browser, with futures running inline.</li>
+</ul>
+<p>The deliberate differences from the other implementations are listed in <code>docs/DEVIATIONS.md</code>.</p>
+</section>
+
+<section id="playground">
+<h2>14. Playground</h2>
+<p>Write any Starlark program. Options switch on dialect features. Press <kbd>Ctrl</kbd>+<kbd>Enter</kbd> to run.</p>
+<div data-expect="FizzBuzz 16 17 Fizz 19 Buzz" class="example playground" data-options="">
+<pre class="code" contenteditable="true" spellcheck="false" id="playground-code">def fizzbuzz(n):
+    if n % 15 == 0:
+        return "FizzBuzz"
+    if n % 3 == 0:
+        return "Fizz"
+    if n % 5 == 0:
+        return "Buzz"
+    return str(n)
+
+print(" ".join([fizzbuzz(i) for i in range(1, 21)]))</pre>
+</div>
+<fieldset class="options" id="playground-options">
+  <legend>Options</legend>
+  <label><input type="checkbox" value="futures" checked> futures</label>
+  <label><input type="checkbox" value="types"> types</label>
+  <label><input type="checkbox" value="check"> static check first</label>
+  <label><input type="checkbox" value="fstrings"> f-strings</label>
+  <label><input type="checkbox" value="recursion"> recursion</label>
+  <label><input type="checkbox" value="utf16"> UTF-16 strings</label>
+</fieldset>
+</section>
+
+</main>
+<footer>
+  <p>starlark-cs <span id="version"></span> &middot; Starlark for .NET 10 &middot; this page runs the interpreter in your
+  browser through WebAssembly; nothing is sent to a server.</p>
+</footer>
+<script type="module" src="site.js"></script>
+</body>
+</html>

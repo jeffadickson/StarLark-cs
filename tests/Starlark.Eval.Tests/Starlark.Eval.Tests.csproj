@@ -27,6 +27,7 @@
     <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="GoSuites\**\*" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\examples\programs\*.star" Link="Examples\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\docs\MANUAL.md" Link="docs\MANUAL.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

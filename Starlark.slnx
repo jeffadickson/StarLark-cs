@@ -30,5 +30,6 @@
     <Project Path="tools/ExampleSync/ExampleSync.csproj" />
     <Project Path="tools/Serve/Serve.csproj" />
     <Project Path="tools/WebCheck/WebCheck.csproj" />
+    <Project Path="tools/BuildSite/BuildSite.csproj" />
   </Folder>
 </Solution>
