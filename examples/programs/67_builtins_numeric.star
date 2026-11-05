@@ -1,6 +1,6 @@
 # title: abs, min, max, sorted, reversed, enumerate, zip, any, all, range
 # output: [3, 3.5]
-# output: [1, 9, "four", "two"]
+# output: [1, 9, "three", "two"]
 # output: [("a", "b", "c")]
 # output: ["three", "four", "two"]
 # output: [4, 3, 2, 1, 0]
@@ -11,7 +11,7 @@
 # output: [10, 8, 6, 4]
 
 print([abs(-3), abs(-3.5)])
-print([min([3, 1, 4]), max([3, 1, 9]), max("two", "three", "four", key = len) if False else "four", min("two", "three", "four", key = len)])
+print([min([3, 1, 4]), max([3, 1, 9]), max("two", "three", "four", key = len), min("two", "three", "four", key = len)])
 print(zip(["a"], ["b"], ["c"]))
 print(sorted(["two", "three", "four"], key = len, reverse = True))
 print(reversed(range(5)))

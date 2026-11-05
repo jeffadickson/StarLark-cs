@@ -16,7 +16,7 @@ def run():
     print(y)
     y.pop(0)
     y.insert(100, "y")
-    print(["a", "b", "y"])
+    print(y)
 
     z = [1, 2, 3]
     print([z.pop(), z])

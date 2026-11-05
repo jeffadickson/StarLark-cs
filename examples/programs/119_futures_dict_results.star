@@ -1,4 +1,4 @@
-# title: Tasks can return dicts and tuples; results are frozen but readable
+# title: Tasks can return dicts and tuples, and the caller can read them
 # dialect: futures
 # output: 2 4 (2, 3)
 # output: 3 9 (3, 4)

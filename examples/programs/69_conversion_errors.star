@@ -1,4 +1,4 @@
-# title: int() of a non-integral string and float() of nonsense are errors
+# title: int() of a string that is not a whole number is an error
 # error: cannot parse
 
 int("1.5")

@@ -1,4 +1,4 @@
-# title: NaN, infinity and negative zero
+# title: NaN, infinity and negative zero (here nan == nan is True and inf < nan is True)
 # output: [True, True, True, True]
 # output: +inf -inf nan
 # output: True
