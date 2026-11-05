@@ -1,6 +1,7 @@
-# Elementary functions in pure Starlark: sin, cos, exp, log, log2 and atan, from series and argument reduction.
+# Elementary functions in pure Starlark, from series and argument reduction: sin, cos, tan, asin, acos, atan, atan2, exp, log,
+# log2, sqrt, pow, hypot, floor, ceil, trunc, round, degrees, radians, isnan and isinf, and the constants pi and e.
 #
-# Load it with:   load("std/approx_math.star", "sin", "cos", "exp", "log", "log2", "atan", "pi", "e")
+# Load it with:   load("std/approx_math.star", "sin", "cos", "tan", "exp", "log", "sqrt", "pow", "pi", "e")   (any of the names)
 #
 # Starlark has no math module and no way to read the bits of a float, so everything here is built from + - * / and
 # comparisons. The results agree with a C library to within a few units in the last place (about 1e-15 relative error),
@@ -13,6 +14,10 @@
 # Special values follow the C and Go libraries, not Python's: log(0) is -inf, log of a negative number is nan, exp overflows
 # to inf, and sin(inf) is nan; none of them is an error. A wrong argument type is an error.
 #
+# Accuracy: sqrt, floor, ceil and trunc are exact or within one unit in the last place; the trigonometric functions, exp and
+# log are within a few. pow is computed as repeated multiplication for a whole exponent up to 64 and otherwise as
+# exp(y * log(x)), whose error grows with |y * log(x)|. The native versions in the host use System.Math.
+#
 # Accuracy limits: sin and cos reduce the argument with a three part value of pi/2, which is exact for |x| below about
 # 1.6 million. Beyond that the error grows with |x| (the reduction has to be done in far more digits to stay exact).
 
@@ -21,6 +26,11 @@ e = 2.718281828459045
 
 _INF = float("inf")
 _NAN = float("nan")
+_PI = 3.141592653589793
+_QUARTER_PI = 0.7853981633974483
+_THREE_QUARTER_PI = 2.356194490192345
+_DEGREES = 57.29577951308232            # degrees per radian
+_RADIANS = 0.017453292519943295         # radians per degree
 
 _LN2_HI = 6.93147180369123816490e-01     # ln 2 split in two so that k * _LN2_HI is exact for |k| < 2048
 _LN2_LO = 1.90821492927058770002e-10
@@ -305,3 +315,233 @@ def atan(x):
     if inverted:
         result = _HALF_PI - result
     return -result if negative else result
+
+# ---------------------------------------------------------------- sign tests
+
+# True for a negative number and for negative zero (the printed form of -0.0 starts with a minus sign).
+def _neg(v):
+    return v < 0.0 or (v == 0.0 and str(v)[0] == "-")
+
+# ---------------------------------------------------------------- tan, asin, acos, atan2
+
+def tan(x):
+    "Tangent of x, in radians."
+    x = _check("tan", x)
+    if _is_nan(x) or x == _INF or x == -_INF:
+        return _NAN
+    if x == 0.0:
+        return x
+    t = _reduce(x)
+    r = t[1]
+    if t[0] & 1 == 0:
+        return _ksin(r) / _kcos(r)
+    # x = n * pi/2 + r with n odd: tan x = -cos(r) / sin(r).
+    s = _ksin(r)
+    if s == 0.0:
+        return _INF
+    return -_kcos(r) / s
+
+def atan2(y, x):
+    "The angle in radians, between -pi and pi, of the point (x, y) measured from the positive x axis. Takes y first, as in C."
+    y = _check("atan2", y)
+    x = _check("atan2", x)
+    if _is_nan(y) or _is_nan(x):
+        return _NAN
+    ny = _neg(y)
+    if y == _INF or y == -_INF:
+        if x == _INF:
+            a = _QUARTER_PI
+        elif x == -_INF:
+            a = _THREE_QUARTER_PI
+        else:
+            a = _HALF_PI
+        return -a if ny else a
+    if x == _INF:
+        return -0.0 if ny else 0.0
+    if x == -_INF:
+        return -_PI if ny else _PI
+    if x == 0.0:
+        if y == 0.0:
+            return (-_PI if ny else _PI) if _neg(x) else y
+        return -_HALF_PI if ny else _HALF_PI
+    if y == 0.0:
+        if x > 0.0:
+            return y
+        return -_PI if ny else _PI
+    a = atan(y / x)
+    if x > 0.0:
+        return a
+    return a - _PI if ny else a + _PI
+
+def asin(x):
+    "Arc sine of x, in radians, between -pi/2 and pi/2. nan when |x| > 1."
+    x = _check("asin", x)
+    if _is_nan(x) or x > 1.0 or x < -1.0:
+        return _NAN
+    return atan2(x, sqrt((1.0 - x) * (1.0 + x)))
+
+def acos(x):
+    "Arc cosine of x, in radians, between 0 and pi. nan when |x| > 1."
+    x = _check("acos", x)
+    if _is_nan(x) or x > 1.0 or x < -1.0:
+        return _NAN
+    return atan2(sqrt((1.0 - x) * (1.0 + x)), x)
+
+# ---------------------------------------------------------------- sqrt, hypot, pow
+
+def sqrt(x):
+    "Square root of x; nan for a negative x."
+    x = _check("sqrt", x)
+    if _is_nan(x) or x == 0.0:
+        return x
+    if x < 0.0:
+        return _NAN
+    if x == _INF:
+        return x
+    # x = m * 2**e with an even e and 1 <= m < 4, so the root is sqrt(m) * 2**(e/2); Newton's method from 1.5 converges in six steps.
+    p = _frexp(x)
+    m = p[0]
+    e = p[1]
+    if e & 1 == 1:
+        m = m * 2.0
+        e -= 1
+    g = 1.5
+    for _ in range(6):
+        g = 0.5 * (g + m / g)
+    return _ldexp(g, e // 2)
+
+def hypot(x, y):
+    "The length of the vector (x, y), sqrt(x*x + y*y), without overflow or underflow on the way."
+    x = _check("hypot", x)
+    y = _check("hypot", y)
+    if x == _INF or x == -_INF or y == _INF or y == -_INF:
+        return _INF
+    if _is_nan(x) or _is_nan(y):
+        return _NAN
+    a = -x if x < 0.0 else x
+    b = -y if y < 0.0 else y
+    if b > a:
+        t = a
+        a = b
+        b = t
+    if a == 0.0:
+        return 0.0
+    r = b / a
+    return a * sqrt(1.0 + r * r)
+
+# x**n for an int n >= 0 below 256, by repeated squaring.
+def _ipow(x, n):
+    result = 1.0
+    base = x
+    for _ in range(0, 8):
+        if n == 0:
+            break
+        if n & 1 == 1:
+            result = result * base
+        base = base * base
+        n = n >> 1
+    return result
+
+# True if y is a whole number (so that a negative base has a real power).
+def _is_whole(y):
+    return y < 9007199254740992.0 and y > -9007199254740992.0 and float(int(y)) == y
+
+# True if y is a whole odd number (every float of magnitude 2**53 or more is even).
+def _is_odd(y):
+    return _is_whole(y) and int(y) & 1 == 1
+
+def pow(x, y):
+    "x raised to the power y, following the C library for zeros, infinities and nan; a negative x with a non-integer y gives nan."
+    x = _check("pow", x)
+    y = _check("pow", y)
+    if y == 0.0 or x == 1.0:
+        return 1.0
+    if _is_nan(x) or _is_nan(y):
+        return _NAN
+    ax = -x if x < 0.0 else x
+    if y == _INF or y == -_INF:
+        if ax == 1.0:
+            return 1.0
+        return _INF if (ax > 1.0) == (y > 0.0) else 0.0
+    odd = _is_odd(y)
+    if x == 0.0:
+        if y < 0.0:
+            return -_INF if (odd and _neg(x)) else _INF
+        return x if odd else 0.0
+    if x == _INF:
+        return _INF if y > 0.0 else 0.0
+    if x == -_INF:
+        if y > 0.0:
+            return -_INF if odd else _INF
+        return -0.0 if odd else 0.0
+    if x < 0.0 and not _is_whole(y):
+        return _NAN
+    negate = x < 0.0 and odd
+    if _is_whole(y) and y <= 64.0 and y >= -64.0:
+        n = int(y)
+        r = _ipow(ax, n if n >= 0 else -n)
+        if n < 0:
+            # 1 / r, where an underflowed r (0) means the true power is beyond the largest float.
+            r = _INF if r == 0.0 else 1.0 / r
+    else:
+        r = exp(y * _ln(ax))
+    return -r if negate else r
+
+# ---------------------------------------------------------------- rounding to ints, angles, tests
+
+# An int is its own answer; a float must be finite. Returns the argument (an int, or a checked float).
+def _round_input(name, x):
+    if type(x) == "int":
+        return x
+    x = _check(name, x)
+    if _is_nan(x) or x == _INF or x == -_INF:
+        fail("%s: cannot convert %s to int" % (name, str(x)))
+    return x
+
+def floor(x):
+    "The largest int not above x."
+    x = _round_input("floor", x)
+    return x if type(x) == "int" else _floor(x)
+
+def ceil(x):
+    "The smallest int not below x."
+    x = _round_input("ceil", x)
+    if type(x) == "int":
+        return x
+    n = int(x)
+    return n + 1 if n < x else n
+
+def trunc(x):
+    "x rounded toward zero, as an int."
+    x = _round_input("trunc", x)
+    return x if type(x) == "int" else int(x)
+
+def round(x):
+    "x rounded to the nearest int; a half goes to the even neighbour (2.5 gives 2, 3.5 gives 4), as in Python."
+    x = _round_input("round", x)
+    if type(x) == "int":
+        return x
+    n = _floor(x)
+    d = x - n
+    if d < 0.5:
+        return n
+    if d > 0.5:
+        return n + 1
+    return n if n % 2 == 0 else n + 1
+
+def degrees(x):
+    "Radians converted to degrees."
+    return _check("degrees", x) * _DEGREES
+
+def radians(x):
+    "Degrees converted to radians."
+    return _check("radians", x) * _RADIANS
+
+def isnan(x):
+    "True if x is nan."
+    return _is_nan(_check("isnan", x))
+
+def isinf(x):
+    "True if x is positive or negative infinity."
+    x = _check("isinf", x)
+    return x == _INF or x == -_INF

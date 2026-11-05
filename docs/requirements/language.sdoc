@@ -245,14 +245,24 @@ UID: LANG-LIB-006
 STATUS: Implemented
 TITLE: Elementary functions
 STATEMENT: >>>
-A bundled Starlark package, load("std/approx_math.star", ...), shall provide sin, cos, exp, log (natural, or to a base), log2
-and atan, computed in Starlark from series and argument reduction, accurate to within a few units in the last place and
+A bundled Starlark package, load("std/approx_math.star", ...), shall provide sin, cos, tan, asin, acos, atan, atan2, exp, log
+(natural, or to a base), log2, sqrt, pow, hypot, floor, ceil, trunc, round, degrees, radians, isnan and isinf (and the constants pi and e), computed in Starlark from series and argument reduction, accurate to within a few units in the last place and
 following the C library for special values (log(0) is -inf, log of a negative is nan, no errors). The host shall also predeclare
-sin, cos, exp, log, log2 and atan, backed by System.Math, with the same names as the package. Names the
-package starts with an underscore shall not be loadable.
+the same functions under the same names, backed by System.Math. Names the package starts with an underscore shall not be loadable.
 <<<
-VERIFICATION: ApproxMathTests
+VERIFICATION: ApproxMathTests, MoreMathTests, MathProperties (never a crash on any argument; the two forms agree)
 COMMENT: The package's sin and cos reduce the argument with a four part pi/2, exact to about 1.6 million; beyond that the error grows with |x|.
+
+[REQUIREMENT]
+UID: LANG-LIB-008
+STATUS: Implemented
+TITLE: Queue package
+STATEMENT: >>>
+A bundled Starlark package, load("std/queue.star", ...), shall provide a first-in, first-out queue with enqueue, dequeue,
+peek, length, emptiness, clear and listing, an optional length limit, and constant amortized time for enqueue and dequeue.
+It shall need no recursion and shall reject any value that is not a queue.
+<<<
+VERIFICATION: QueueTests
 
 [REQUIREMENT]
 UID: LANG-LIB-007
