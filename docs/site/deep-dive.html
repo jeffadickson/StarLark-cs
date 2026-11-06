@@ -168,8 +168,8 @@ spin()</pre>
   disk.</li>
   <li>Exhaustive tests: every string up to a few characters over a small alphabet is fed to the lexer, the parser and the
   BASIC expression evaluator.</li>
-  <li>Guards on every recursive path (nesting depth, call depth, cyclic values), on huge numbers (integers are capped in
-  size), and on memory (the size of each new string, list, tuple or bytes value is checked before it is built).</li>
+  <li>Guards on every recursive path (nesting depth, call depth, cyclic values), on huge numbers (an int may have at most
+  2<sup>20</sup> bits, about 315,000 decimal digits, and parsing and printing big ints is not quadratic), and on memory (the size of each new string, list, tuple or bytes value is checked before it is built).</li>
 </ul>
 <p>The first five-hour soak found 116 failing rounds and 6 hangs. All were fixed and each has a regression test.</p>
 </section>
@@ -234,7 +234,10 @@ print(run())</pre>
 run three simulated builds side by side.</p>
 <p><b>In the browser.</b> WebAssembly here has no threads, so tasks run inline on the page's thread at the moment they are
 started. The test suite runs every futures example both ways and checks that output and errors are identical; only the
-wall-clock overlap is lost.</p>
+wall-clock overlap is lost. Two things make that hold: a task's call depth is capped (100 calls, counting the spawner's)
+in both modes, so deep recursion fails the same way whichever stack it runs on; and once a task hits a limit, every later
+<code>spawn</code>, <code>get</code> and <code>all_of</code> reports that limit, rather than whatever the scheduler happened to
+cancel.</p>
 </section>
 
 <section id="types">

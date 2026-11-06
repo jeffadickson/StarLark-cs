@@ -271,6 +271,30 @@ public class ManualTests
         Assert.Equal(1_000, limits.MaxLiveFutures);
         Assert.Equal(10_000, limits.MaxSpawns);
         Assert.Equal(8, limits.MaxHostOperations);
+        Assert.Equal(16 * 1024 * 1024, limits.MaxBufferedOutputBytes);
+        Assert.Equal(100, FutureLimits.MaxTaskCallDepth);
+    }
+
+    [Fact]
+    public void TheIntSizeCapIsAsTheManualSays()
+    {
+        Assert.Equal(1 << 20, Ops.MaxIntBits);
+        var it = new Interpreter();
+        var e = Assert.Throws<StarlarkException>(() => it.Execute("t.star", "x = 1 << 2000000\n"));
+        Assert.Contains("Integer overflow", e.RawMessage);
+        Assert.Throws<StarlarkException>(() => it.Execute("t.star", "x = int('7' * 400000)\n"));
+        // About 315,000 decimal digits: the largest allowed int has that many.
+        var m = it.Execute("t.star", "n = len(str((1 << 1048575) - 1 + (1 << 1048575)))\n");
+        Assert.Equal(new BigInteger(315653), m.Globals["n"]);
+    }
+
+    [Fact]
+    public void LastRunStepsIsSetAfterEveryRunAsTheManualSays()
+    {
+        var it = new Interpreter();
+        it.Execute("t.star", "x = [i for i in range(100)]\n");
+        Assert.True(it.LastRunSteps > 0);
+        Assert.Null(it.LastRunStats);
     }
 
     [Fact]

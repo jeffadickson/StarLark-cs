@@ -204,7 +204,9 @@ cancellation, which ends the run with `OperationCanceledException`.
 
 The project's robustness rule (requirement QA-ROB-001) is that **no input may crash, hang or exhaust the host process**:
 every user-input path is fuzzed, exhaustively tested over small alphabets, and soak-tested for hours under a memory cap.
-Deep nesting, cyclic values and huge numbers end in a Starlark error, never a stack overflow.
+Deep nesting, cyclic values and huge numbers end in a Starlark error, never a stack overflow. An int may have at most
+2^20 bits (about 315,000 decimal digits); an operation whose result would be larger fails with "Integer overflow", and
+`int()` of a longer string is an error.
 
 ## 6. Errors
 
@@ -312,9 +314,15 @@ var m = it.Execute("io.star", "fs = [fetch(k) for k in ['a', 'b', 'c']]\nr = all
 ```
 
 The limits (`FutureLimits`) default to the "untrusted host" profile: 4 tasks at once, 1,000 uncollected futures,
-10,000 spawns per run, 8 host operations in flight. On a platform without threads (browser WebAssembly), tasks run
-inline on the calling thread: results, errors and output are identical, only the overlap is lost
-(`FutureLimits.RunInline`).
+10,000 spawns per run, 8 host operations in flight, and 16 MB of task output buffered across the run
+(`MaxBufferedOutputBytes`). A task's call depth is also capped at a fixed 100 calls, counting the spawner's calls
+(`FutureLimits.MaxTaskCallDepth`, a constant). Once any task hits a
+limit, every later `spawn`, `get`, `all_of` and `parallel_map` reports that same limit.
+
+On a platform without threads (browser WebAssembly), tasks run inline on the calling thread (`FutureLimits.RunInline`):
+results, errors and output are the same as with worker threads, and only the overlap of script tasks is lost. Host operations
+registered `asFuture` still overlap. One caveat: an inline task runs on the caller's stack, so on a thread with much less than
+the usual 1 MB of stack a deeply recursive task can run out of stack before it reaches `MaxTaskCallDepth`.
 
 The full design, with the review findings that shaped it, is in [futures-design.md](futures-design.md).
 
@@ -461,6 +469,7 @@ only), `MutantReport` (summarises Stryker.NET mutation runs), `PrettyPrint`, `Se
 | `StringElements` | `Utf8` | String offsets in UTF-8 bytes or UTF-16 code units. |
 | `AllowGlobalReassign` | false | Let a file assign a global twice. |
 | `TypecheckBeforeExecute` | false | Run the static checker first and refuse programs with errors. |
-| `FutureLimits` | untrusted profile | Concurrency, spawn and host-operation caps; `RunInline`. |
+| `FutureLimits` | untrusted profile | Concurrency, spawn, host-operation, task call depth and buffered output caps; `RunInline`. |
+| `LastRunSteps` | | After any run (also a failed one): the steps it took. |
 | `ThreadName`, `ThreadLocals` | empty | Go-style thread name and locals, visible to host functions through `ScriptThread`. |
 | `LastRunStats` | null | After a run that started tasks or host futures: steps, spawns, peak concurrency, host calls; null otherwise. |

@@ -114,7 +114,7 @@ disk. Malformed, truncated, hostile and oversized input shall end in a bounded, 
 user input shall have error-path and truncation tests, an exhaustive test over all short strings of a small alphabet where
 the input has a grammar, and a guard that fails fast if a loop over input stops making progress.
 <<<
-VERIFICATION: LexerRegressionTests (exhaustive short inputs, progress guard); ExhaustiveInputTests; StackDepthTests (deep and cyclic values); BoundedExpansionTests; Starlark.Fuzz.Tests; tools/Soak with child memory cap and disk floor
+VERIFICATION: LexerRegressionTests (exhaustive short inputs, progress guard); ExhaustiveInputTests; StackDepthTests; ReleaseCandidate1Tests (review findings: cyclic and deep host conversion, int size cap, bounded strings, futures limits) (deep and cyclic values); BoundedExpansionTests; Starlark.Fuzz.Tests; tools/Soak with child memory cap and disk floor
 COMMENT: Added after an unterminated f-string format spec (f'{:) made the lexer loop and exhaust memory during a soak run.
 
 [REQUIREMENT]
