@@ -82,6 +82,7 @@ internal sealed class Resolver
 
     private void BindModule(Stmt stmt, Scope module)
     {
+        StackGuard.CheckSyntax();
         switch (stmt)
         {
             case AssignStmt a:
@@ -113,6 +114,7 @@ internal sealed class Resolver
 
     private static void BindLocals(Stmt stmt, HashSet<string> names)
     {
+        StackGuard.CheckSyntax();
         switch (stmt)
         {
             case AssignStmt a: a.Target.VisitLvalue(id => names.Add(id.Name)); break;
@@ -135,8 +137,10 @@ internal sealed class Resolver
         return _isPredeclared(name);
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     private void CheckStmt(Stmt stmt, Scope scope)
     {
+        StackGuard.CheckSyntax();
         switch (stmt)
         {
             case DefStmt d:
@@ -161,40 +165,70 @@ internal sealed class Resolver
         }
     }
 
+    /// <summary>
+    /// Checks every name an expression reads. Recursive, once per level of nesting, so the cases that need a closure or many
+    /// locals live in their own methods and this frame stays small (no closure object is created on entry). These methods are
+    /// compiled optimized on first use (AggressiveOptimization): unoptimized frames are several times larger, and a program
+    /// nested 1000 deep (the parser's limit) must resolve on an ordinary 1 MB thread the first time it is seen.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     private void CheckExpr(Expr expr, Scope scope)
     {
+        StackGuard.CheckSyntax();
         switch (expr)
         {
+            case BinaryExpr bin:
+                CheckBinary(bin, scope);
+                return;
             case IdentExpr id:
-                if (!IsBound(id.Name, scope))
-                {
-                    throw Error(id.Span, $"Variable `{id.Name}` not found");
-                }
+                if (!IsBound(id.Name, scope)) throw NotFound(id);
                 return;
-
             case LambdaExpr lam:
-            {
-                foreach (var p in lam.Parameters) p.VisitExpr(e => CheckExpr(e, scope));
-                var fn = new Scope(scope, isModule: false);
-                foreach (var p in lam.Parameters.Where(p => p.Name is not null)) fn.Names.Add(p.Name!.Name);
-                CheckExpr(lam.Body, fn);
+                CheckLambda(lam, scope);
                 return;
-            }
-
             case ListComprehension lc:
-                CheckComprehension(lc.First, lc.Rest, scope, inner => CheckExpr(lc.Item, inner));
+                CheckListComprehension(lc, scope);
                 return;
-
             case DictComprehension dc:
-                CheckComprehension(dc.First, dc.Rest, scope, inner => { CheckExpr(dc.Key, inner); CheckExpr(dc.Value, inner); });
+                CheckDictComprehension(dc, scope);
                 return;
-
             default:
-                expr.VisitExpr(e => CheckExpr(e, scope));
+                CheckChildren(expr, scope);
                 return;
         }
     }
 
+    private StarlarkException NotFound(IdentExpr id) => Error(id.Span, $"Variable `{id.Name}` not found");
+
+    /// <summary>A long chain <c>a + b + c + ...</c> nests on the left: it is walked with a loop, not one call per operator.</summary>
+    private void CheckBinary(BinaryExpr bin, Scope scope)
+    {
+        var chain = bin.LeftChain;
+        CheckExpr(chain[0].Left, scope);
+        foreach (var node in chain) CheckExpr(node.Right, scope);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining | System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
+    private void CheckChildren(Expr expr, Scope scope) => expr.VisitExpr(e => CheckExpr(e, scope));
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining | System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
+    private void CheckLambda(LambdaExpr lam, Scope scope)
+    {
+        foreach (var p in lam.Parameters) p.VisitExpr(e => CheckExpr(e, scope));
+        var fn = new Scope(scope, isModule: false);
+        foreach (var p in lam.Parameters.Where(p => p.Name is not null)) fn.Names.Add(p.Name!.Name);
+        CheckExpr(lam.Body, fn);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining | System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
+    private void CheckListComprehension(ListComprehension lc, Scope scope) =>
+        CheckComprehension(lc.First, lc.Rest, scope, inner => CheckExpr(lc.Item, inner));
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining | System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
+    private void CheckDictComprehension(DictComprehension dc, Scope scope) =>
+        CheckComprehension(dc.First, dc.Rest, scope, inner => { CheckExpr(dc.Key, inner); CheckExpr(dc.Value, inner); });
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     private void CheckComprehension(ForClause first, IReadOnlyList<Clause> rest, Scope outer, Action<Scope> body)
     {
         var comp = new Scope(outer, isModule: false);

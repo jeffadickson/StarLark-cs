@@ -117,6 +117,9 @@ public sealed record StackFrame(string Function, Span? Span, CodeMap? CodeMap)
 
     /// <summary>The 1-based line, or 0 if unknown.</summary>
     public int Line => Span is { } s && CodeMap is { } cm ? cm.ResolveSpan(s).Begin.Line + 1 : 0;
+
+    /// <summary><c>file:line:column: in function</c>, as Go prints a frame (or just <c>in function</c> if the position is unknown).</summary>
+    public override string ToString() => Location is { } at ? $"{at}: in {Function}" : $"in {Function}";
 }
 
 /// <summary>Constructors for the error messages shared across the runtime.</summary>

@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using Starlark.Syntax;
 
 namespace Starlark.Eval;
@@ -77,7 +78,7 @@ public sealed class StarFunction : ICallable
     internal CodeMap CodeMap { get; }
 
     public object? Call(Interpreter interp, IReadOnlyList<object?> args, IReadOnlyList<KeyValuePair<string, object?>> kwargs) =>
-        Owner.CallFunction(this, args, kwargs);
+        Owner.CallFromAnywhere(this, args, kwargs);
 
     /// <summary>
     /// A copy of this function bound to a different closure frame, with its parameter defaults copied through
@@ -173,6 +174,77 @@ public sealed class Interpreter
     {
         get => _maxCallDepth ?? (Dialect.EnableRecursion ? DefaultRecursionDepth : DefaultCallDepth);
         set => _maxCallDepth = value > 0 ? value : throw new ArgumentOutOfRangeException(nameof(value));
+    }
+
+    private long _scriptStackSize;
+
+    /// <summary>
+    /// The stack size, in bytes, of a dedicated thread to run each script on, or 0 (the default) to run on the calling thread.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// How deep a script can recurse (with <see cref="Dialect.EnableRecursion"/>) or nest is bounded by <see cref="MaxCallDepth"/>
+    /// and by the stack of the thread it runs on: the remaining stack is checked on every call, so running short ends the run
+    /// with an ordinary error ("Starlark stack overflow", "nested too deeply"), never a crash. An ordinary thread has 1 MB,
+    /// enough for about 1,000 nested calls of a simple function. To go further, as Starlark-Go does (100,000 calls), raise
+    /// <see cref="MaxCallDepth"/> and set this to a larger stack, for example 256 MB.
+    /// </para>
+    /// <para>
+    /// When set, every outermost run (<see cref="Execute(AstModule)"/>, <see cref="Execute(string, string)"/>, <see cref="Eval"/>,
+    /// <see cref="CallValue"/>, <see cref="Call{T}"/>, a script function called from the host) starts a new thread with this
+    /// stack, runs the script there and waits for it. The result, or the exception with its original stack trace, comes back
+    /// to the caller unchanged; <see cref="Cancellation"/> and <see cref="Timeout"/> work as before. A call made while a script
+    /// is already running on the calling thread (a host function calling back into the script) stays on that thread.
+    /// </para>
+    /// <para>
+    /// The trade-off: each run pays for starting a thread (tens of microseconds), the stack is reserved address space
+    /// (committed only as it is used, but a 256 MB reservation per concurrent run adds up on 32-bit hosts), and host
+    /// functions run on the script's thread rather than the caller's, so they must not rely on thread affinity (a UI thread,
+    /// a thread-static set by the caller). Leave it at 0 unless scripts need deep recursion.
+    /// </para>
+    /// <para>
+    /// Browser WebAssembly and WASI cannot start threads (<see cref="Futures.FutureLimits.ThreadsUnavailable"/>); there the
+    /// setting is ignored and scripts run on the calling thread, whose stack bounds them as usual.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">The value is negative, or positive but below 256 KB.</exception>
+    public long ScriptStackSize
+    {
+        get => _scriptStackSize;
+        set => _scriptStackSize = value == 0 || (value >= MinScriptStackSize && value <= int.MaxValue)
+            ? value
+            : throw new ArgumentOutOfRangeException(nameof(value), value, $"ScriptStackSize must be 0 or between {MinScriptStackSize} and {int.MaxValue} bytes");
+    }
+
+    /// <summary>The smallest <see cref="ScriptStackSize"/> accepted (256 KB): less would make ordinary scripts fail.</summary>
+    public const long MinScriptStackSize = 256 * 1024;
+
+    /// <summary>
+    /// Runs <paramref name="run"/> on a new thread of <see cref="ScriptStackSize"/> bytes of stack when that is set, the
+    /// platform can start threads and no script is already running on this thread; otherwise runs it here. Waits for it, and
+    /// returns its result or rethrows its exception with the original stack trace.
+    /// </summary>
+    private T OnScriptStack<T>(Func<T> run)
+    {
+        if (_scriptStackSize == 0 || ExecutionContext.Current is not null || Futures.FutureLimits.ThreadsUnavailable) return run();
+        T result = default!;
+        System.Runtime.ExceptionServices.ExceptionDispatchInfo? failure = null;
+        var thread = new Thread(() =>
+        {
+            // Nothing may escape a thread's delegate: an unhandled exception there ends the process.
+            try { result = run(); }
+            catch (Exception e) { failure = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e); }
+        }, (int)_scriptStackSize)
+        {
+            IsBackground = true,
+            Name = ThreadName.Length > 0 ? ThreadName : "starlark-script",
+        };
+        thread.Start();
+        // The script thread polls Cancellation and Timeout itself (they are read from this interpreter when its run starts), so
+        // it ends promptly when either fires; joining it is enough, and it means the run never outlives the call.
+        thread.Join();
+        failure?.Throw();
+        return result;
     }
 
     /// <summary>The name given to each run's thread, for debugging; scripts and host functions can read it with <see cref="ScriptThread.Name"/>.</summary>
@@ -463,6 +535,7 @@ public sealed class Interpreter
         var loads = new List<string>();
         void Collect(Stmt s)
         {
+            StackGuard.CheckSyntax();
             if (s is LoadStmt l) loads.Add(l.Module.Value);
             s.VisitStmt(Collect);
         }
@@ -483,7 +556,10 @@ public sealed class Interpreter
     /// </summary>
     public bool TypecheckBeforeExecute { get; set; }
 
-    public Module Execute(AstModule ast)
+    /// <summary>Resolve and run a parsed module, then freeze its globals (on a thread of <see cref="ScriptStackSize"/> if set).</summary>
+    public Module Execute(AstModule ast) => OnScriptStack(() => ExecuteHere(ast));
+
+    private Module ExecuteHere(AstModule ast)
     {
         if (TypecheckBeforeExecute)
         {
@@ -518,7 +594,9 @@ public sealed class Interpreter
 
     /// <summary>Evaluate a single expression, e.g. <c>Eval("1 + 2")</c>.</summary>
     /// <exception cref="StarlarkSyntaxException">The text does not parse, or is not a single expression.</exception>
-    public object? Eval(string expression)
+    public object? Eval(string expression) => OnScriptStack(() => EvalHere(expression));
+
+    private object? EvalHere(string expression)
     {
         var ast = AstModule.Parse("<eval>", "_ = (" + expression + "\n)", Dialect);
         // Text that closes the wrapper's parenthesis can smuggle in statements; only one plain expression is accepted.
@@ -536,9 +614,11 @@ public sealed class Interpreter
 
     // ------------------------------------------------------------------ statements
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]   // see EvalExpr
     private Flow ExecStmt(Stmt stmt, Frame f, CodeMap cm)
     {
         Step();
+        if (!RuntimeHelpers.TryEnsureSufficientExecutionStack()) throw OutOfStack();
         try
         {
             return ExecStmtInner(stmt, f, cm);
@@ -549,6 +629,7 @@ public sealed class Interpreter
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Flow ExecStmtInner(Stmt stmt, Frame f, CodeMap cm)
     {
         switch (stmt)
@@ -566,21 +647,8 @@ public sealed class Interpreter
                 return Flow.Normal;
 
             case AssignStmt a:
-            {
-                var value = EvalExpr(a.Value, f, cm);
-                if (a.Type is { } annotation)
-                {
-                    // `x: int = 1` checks the value against the annotation at run time.
-                    var ty = TypeOf(annotation, f, cm);
-                    if (!ty.Matches(value))
-                    {
-                        throw new StarlarkException(
-                            $"Value `{Repr.Of(value)}` of type `{Types.Name(value)}` does not match the type annotation `{ty}` for assignment");
-                    }
-                }
-                Assign(a.Target, value, f, cm);
+                ExecAssign(a, f, cm);
                 return Flow.Normal;
-            }
 
             case AssignModifyStmt m:
                 AssignModify(m, f, cm);
@@ -618,6 +686,25 @@ public sealed class Interpreter
         throw new InvalidOperationException(stmt.GetType().Name);
     }
 
+    // Its own method, so ExecStmtInner's frame (on the stack once per nested statement and per nested call) stays small.
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    private void ExecAssign(AssignStmt a, Frame f, CodeMap cm)
+    {
+        var value = EvalExpr(a.Value, f, cm);
+        if (a.Type is { } annotation)
+        {
+            // `x: int = 1` checks the value against the annotation at run time.
+            var ty = TypeOf(annotation, f, cm);
+            if (!ty.Matches(value))
+            {
+                throw new StarlarkException(
+                    $"Value `{Repr.Of(value)}` of type `{Types.Name(value)}` does not match the type annotation `{ty}` for assignment");
+            }
+        }
+        Assign(a.Target, value, f, cm);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Flow ExecFor(ForStmt fo, Frame f, CodeMap cm)
     {
         var iterable = EvalExpr(fo.Over, f, cm);
@@ -687,6 +774,7 @@ public sealed class Interpreter
 
     private void Assign(AssignTarget target, object? value, Frame f, CodeMap cm)
     {
+        StackGuard.CheckSyntax();
         switch (target)
         {
             case IdentTarget id:
@@ -860,6 +948,17 @@ public sealed class Interpreter
         public static readonly Missing Value = new();
     }
 
+    /// <summary>A call of a script function: from a running script it is an ordinary call; from the host it is a new run.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    internal object? CallFromAnywhere(StarFunction fn, IReadOnlyList<object?> args, IReadOnlyList<KeyValuePair<string, object?>> kwargs) =>
+        ExecutionContext.Current is not null || _scriptStackSize == 0 ? CallFunction(fn, args, kwargs) : CallFromHost(fn, args, kwargs);
+
+    // Separate from CallFromAnywhere so the closure is only allocated for a host call on a script stack, not on every call.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private object? CallFromHost(StarFunction fn, IReadOnlyList<object?> args, IReadOnlyList<KeyValuePair<string, object?>> kwargs) =>
+        OnScriptStack(() => CallFunction(fn, args, kwargs));
+
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]   // once per nested call: see EvalExpr
     internal object? CallFunction(StarFunction fn, IReadOnlyList<object?> args, IReadOnlyList<KeyValuePair<string, object?>> kwargs)
     {
         // A function of a frozen module called from a thread that is not running a script gets its own run state.
@@ -1055,19 +1154,41 @@ public sealed class Interpreter
     {
         if (callee is ICallable c)
         {
-            using var scope = ExecutionContext.EnterRun(this);
-            var result = c.Call(this, args, kwargs ?? []);
-            if (scope.IsOutermost) Futures.FutureBuiltins.CheckAllCollected(Ctx);
-            return result;
+            return OnScriptStack(() =>
+            {
+                using var scope = ExecutionContext.EnterRun(this);
+                var result = c.Call(this, args, kwargs ?? []);
+                if (scope.IsOutermost) Futures.FutureBuiltins.CheckAllCollected(Ctx);
+                return result;
+            });
         }
         throw new StarlarkException($"Operation `call()` not supported on type '{Types.Name(callee)}': not callable");
     }
 
     // ------------------------------------------------------------------ expressions
 
+    /// <summary>
+    /// The error for a thread that is about to run out of stack while evaluating. Inside a function call it is reported as
+    /// Go reports deep recursion ("Starlark stack overflow"), since that is almost always the cause; at the top level it can
+    /// only be deeply nested code on a small stack.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static StarlarkException OutOfStack() => Ctx.Depth > 0
+        ? new StarlarkException($"Starlark stack overflow: the thread ran out of stack after {Ctx.Depth} nested calls")
+        : new StarlarkException("Program is nested too deeply: excessive nesting for the remaining stack of this thread");
+
+    // The methods on the evaluator's recursive path are marked AggressiveOptimization: they are compiled optimized on first
+    // use instead of starting as unoptimized ("tier 0") code, whose frames are several times larger. Without it, the first
+    // run of a deeply nested program (a call or list nested 1000 deep, the parser's limit) would need about 1.7 KB of stack
+    // per level and not fit in an ordinary 1 MB thread; optimized, it needs about 400 bytes.
+
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private object? EvalExpr(Expr expr, Frame f, CodeMap cm)
     {
         Step();
+        // The parser bounds nesting at 1000 levels, but nesting inside calls adds up (MaxCallDepth counts calls only) and a
+        // host may run scripts on a small thread stack; an ordinary error is better than a crash.
+        if (!RuntimeHelpers.TryEnsureSufficientExecutionStack()) throw OutOfStack();
         try
         {
             return EvalInner(expr, f, cm);
@@ -1078,6 +1199,7 @@ public sealed class Interpreter
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private object? EvalInner(Expr expr, Frame f, CodeMap cm)
     {
         switch (expr)
@@ -1101,19 +1223,7 @@ public sealed class Interpreter
             case ListExpr l:
                 return EvalList(l, f, cm);
             case DictExpr d:
-            {
-                var dict = new StarDict();
-                foreach (var (k, v) in d.Entries)
-                {
-                    var key = EvalExpr(k, f, cm);
-                    if (dict.ContainsKey(key))
-                    {
-                        throw new StarlarkException($"Duplicate dictionary key `{Repr.Of(key)}`");
-                    }
-                    dict.Set(key, EvalExpr(v, f, cm));
-                }
-                return dict;
-            }
+                return EvalDict(d, f, cm);
 
             case NotExpr n:
                 return !Types.Truthy(EvalExpr(n.Operand, f, cm));
@@ -1128,32 +1238,17 @@ public sealed class Interpreter
                 return EvalBinary(bin, f, cm);
 
             case IfExpr ie:
-                return Types.Truthy(EvalExpr(ie.Condition, f, cm))
-                    ? EvalExpr(ie.IfTrue, f, cm)
-                    : EvalExpr(ie.IfFalse, f, cm);
+                return EvalExpr(Types.Truthy(EvalExpr(ie.Condition, f, cm)) ? ie.IfTrue : ie.IfFalse, f, cm);
 
             case DotExpr dot:
                 return Methods.GetAttr(EvalExpr(dot.Target, f, cm), dot.Field.Value);
 
             case IndexExpr ix:
-            {
-                var target = EvalExpr(ix.Target, f, cm);
-                var index = EvalExpr(ix.Index, f, cm);
-                return TypeEval.IsParametrizable(target) ? TypeEval.Parametrize(target, index) : Ops.Index(target, index);
-            }
+                return EvalIndex(ix, f, cm);
             case Index2Expr ix2:
-            {
-                var target = EvalExpr(ix2.Target, f, cm);
-                var pair = new StarTuple([EvalExpr(ix2.First, f, cm), EvalExpr(ix2.Second, f, cm)]);
-                return TypeEval.IsParametrizable(target) ? TypeEval.Parametrize(target, pair) : Ops.Index(target, pair);
-            }
-
+                return EvalIndex2(ix2, f, cm);
             case SliceExpr sl:
-                return Ops.Slice(
-                    EvalExpr(sl.Target, f, cm),
-                    sl.Start is null ? null : EvalExpr(sl.Start, f, cm),
-                    sl.Stop is null ? null : EvalExpr(sl.Stop, f, cm),
-                    sl.Step is null ? null : EvalExpr(sl.Step, f, cm));
+                return EvalSlice(sl, f, cm);
 
             case CallExpr call:
                 return EvalCall(call, f, cm);
@@ -1172,9 +1267,54 @@ public sealed class Interpreter
         throw new InvalidOperationException(expr.GetType().Name);
     }
 
+    // The cases below have their own methods so that EvalInner, whose frame is on the stack once per level of nesting, stays
+    // small: a nested list or call 1000 deep (the parser's limit) must fit in an ordinary 1 MB thread stack. Some also use
+    // lambdas, which would make the compiler allocate a closure object on entry to EvalInner (it creates a method's capture
+    // object before its first statement). NoInlining keeps the JIT from folding them back in.
+
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    private StarDict EvalDict(DictExpr d, Frame f, CodeMap cm)
+    {
+        var dict = new StarDict();
+        foreach (var (k, v) in d.Entries)
+        {
+            var key = EvalExpr(k, f, cm);
+            if (dict.ContainsKey(key)) throw DuplicateKey(key);
+            dict.Set(key, EvalExpr(v, f, cm));
+        }
+        return dict;
+    }
+
+    private static StarlarkException DuplicateKey(object? key) => new($"Duplicate dictionary key `{Repr.Of(key)}`");
+
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    private object?EvalIndex(IndexExpr ix, Frame f, CodeMap cm)
+    {
+        var target = EvalExpr(ix.Target, f, cm);
+        var index = EvalExpr(ix.Index, f, cm);
+        return TypeEval.IsParametrizable(target) ? TypeEval.Parametrize(target, index) : Ops.Index(target, index);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    private object?EvalIndex2(Index2Expr ix2, Frame f, CodeMap cm)
+    {
+        var target = EvalExpr(ix2.Target, f, cm);
+        var pair = new StarTuple([EvalExpr(ix2.First, f, cm), EvalExpr(ix2.Second, f, cm)]);
+        return TypeEval.IsParametrizable(target) ? TypeEval.Parametrize(target, pair) : Ops.Index(target, pair);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    private object?EvalSlice(SliceExpr sl, Frame f, CodeMap cm) =>
+        Ops.Slice(
+            EvalExpr(sl.Target, f, cm),
+            sl.Start is null ? null : EvalExpr(sl.Start, f, cm),
+            sl.Stop is null ? null : EvalExpr(sl.Stop, f, cm),
+            sl.Step is null ? null : EvalExpr(sl.Step, f, cm));
+
     // The cases below use lambdas. They live in their own methods so that EvalInner, which runs for every node, does not
     // allocate a closure object on entry (the C# compiler creates a method's capture object before its first statement).
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private StarTuple EvalTuple(TupleExpr t, Frame f, CodeMap cm)
     {
         var items = new object?[t.Items.Count];
@@ -1182,6 +1322,7 @@ public sealed class Interpreter
         return new StarTuple(items);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private StarList EvalList(ListExpr l, Frame f, CodeMap cm)
     {
         var items = new List<object?>(l.Items.Count);
@@ -1203,6 +1344,7 @@ public sealed class Interpreter
         return dict;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private string EvalFString(FStringExpr fs, Frame f, CodeMap cm)
     {
         var values = new List<object?>(fs.Expressions.Count);
@@ -1210,9 +1352,35 @@ public sealed class Interpreter
         return StringFormat.Format(fs.Format, values, []);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private object? EvalBinary(BinaryExpr bin, Frame f, CodeMap cm)
     {
-        var left = EvalExpr(bin.Left, f, cm);
+        // A chain such as `1 + 2 + 3` is `(1 + 2) + 3`: it nests on the left, one level per operator, and generated code
+        // can make it thousands long. It is evaluated with a loop from the innermost operator out, so its length costs no
+        // stack. Each inner operator is still a node of its own: it counts a step and is where its own errors are reported.
+        if (bin.Left is not BinaryExpr) return EvalBinaryStep(bin, EvalExpr(bin.Left, f, cm), f, cm);
+        var chain = bin.LeftChain;
+        var value = EvalExpr(chain[0].Left, f, cm);
+        for (int i = 0; i < chain.Count - 1; i++)
+        {
+            var inner = chain[i];
+            Step();
+            try
+            {
+                value = EvalBinaryStep(inner, value, f, cm);
+            }
+            catch (StarlarkException e) when (e.AttachLocation(inner.Span, cm))
+            {
+                throw;
+            }
+        }
+        return EvalBinaryStep(bin, value, f, cm);
+    }
+
+    /// <summary>Applies <paramref name="bin"/>'s operator to its already-evaluated left operand.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private object? EvalBinaryStep(BinaryExpr bin, object? left, Frame f, CodeMap cm)
+    {
         switch (bin.Op)
         {
             // Short-circuit, returning the deciding operand rather than a bool.
@@ -1270,6 +1438,7 @@ public sealed class Interpreter
 
     // ------------------------------------------------------------------ calls
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private object? EvalCall(CallExpr call, Frame f, CodeMap cm)
     {
         var callee = EvalExpr(call.Function, f, cm);
@@ -1322,6 +1491,7 @@ internal static class LocalCollector
 {
     public static void Collect(Stmt stmt, HashSet<string> locals)
     {
+        StackGuard.CheckSyntax();
         switch (stmt)
         {
             case AssignStmt a:

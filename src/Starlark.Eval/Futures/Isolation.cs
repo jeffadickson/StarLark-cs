@@ -105,8 +105,15 @@ internal static class Isolation
 
         void VisitExpr(Expr e, HashSet<string> bound)
         {
+            StackGuard.CheckSyntax();
             switch (e)
             {
+                case BinaryExpr bin:
+                    // A long chain `a + b + c + ...` nests on the left: walk it with a loop, not one call per operator.
+                    var chain = bin.LeftChain;
+                    VisitExpr(chain[0].Left, bound);
+                    foreach (var node in chain) VisitExpr(node.Right, bound);
+                    return;
                 case IdentExpr id:
                     if (!fn.Locals.Contains(id.Name) && !bound.Contains(id.Name)) free.Add(id.Name);
                     return;
@@ -158,6 +165,7 @@ internal static class Isolation
 
         void VisitStmt(Stmt s, HashSet<string> bound)
         {
+            StackGuard.CheckSyntax();
             if (s is DefStmt d)
             {
                 s.VisitOwnExprs(x => VisitExpr(x, bound));   // parameter defaults and annotations

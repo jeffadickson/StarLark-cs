@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using Starlark.Syntax;
 
 namespace Starlark.Eval.TypeCheck;
@@ -121,6 +122,7 @@ public sealed class TypeChecker
     /// </summary>
     private Ty Annotation(Expr e, Scope scope)
     {
+        StackGuard.CheckSyntax();
         switch (e)
         {
             case LiteralExpr { } when e is EllipsisLiteral:
@@ -137,7 +139,16 @@ public sealed class TypeChecker
                     _ => Approximate("unknown typing member", e.Span),
                 };
             case BinaryExpr { Op: BinOp.BitOr } b:
-                return Ty.Union([Annotation(b.Left, scope), Annotation(b.Right, scope)]);
+            {
+                // `a | b | c` nests on the left; take the whole run of `|` with a loop.
+                var parts = new List<Ty>();
+                var chain = b.LeftChain;
+                int first = chain.Count - 1;
+                while (first > 0 && chain[first - 1].Op == BinOp.BitOr) first--;
+                parts.Add(Annotation(chain[first].Left, scope));
+                for (int i = first; i < chain.Count; i++) parts.Add(Annotation(chain[i].Right, scope));
+                return Ty.Union(parts);
+            }
             case TupleExpr t:
                 return new Ty.TupleTy(t.Items.Select(i => Annotation(i, scope)).ToList());
             case IndexExpr ix:
@@ -257,6 +268,7 @@ public sealed class TypeChecker
     /// <summary>First pass: `R = record(...)` and `E = enum(...)` define types that annotations and constructors refer to.</summary>
     private void CollectDefinitions(Stmt stmt, Scope scope)
     {
+        StackGuard.CheckSyntax();
         if (stmt is AssignStmt { Target: IdentTarget defId } defAssign)
         {
             CollectDefinition(defId.Ident.Name, defAssign.Value, scope);
@@ -267,6 +279,7 @@ public sealed class TypeChecker
 
     private void CollectSignatures(Stmt stmt, Scope scope)
     {
+        StackGuard.CheckSyntax();
         switch (stmt)
         {
             case AssignStmt { Target: IdentTarget id } a when a.Value is IndexExpr or Index2Expr or BinaryExpr { Op: BinOp.BitOr }
@@ -284,14 +297,26 @@ public sealed class TypeChecker
         stmt.VisitStmt(s => CollectSignatures(s, scope));
     }
 
-    private static bool LooksLikeType(Expr e) => e switch
+    private static bool LooksLikeType(Expr e) => StackGuard.CheckedSyntax() && e switch
     {
         IdentExpr { Name: "int" or "str" or "bool" or "float" or "list" or "dict" or "set" or "tuple" or "bytes" } => true,
         IndexExpr { Target: IdentExpr { Name: "list" or "dict" or "set" or "tuple" } } => true,
         Index2Expr { Target: IdentExpr { Name: "list" or "dict" or "set" or "tuple" } } => true,
-        BinaryExpr { Op: BinOp.BitOr } b => LooksLikeType(b.Left) && LooksLikeType(b.Right),
+        BinaryExpr { Op: BinOp.BitOr } b => AllTypes(b),
         _ => false,
     };
+
+    /// <summary><c>a | b | c</c>: every operand looks like a type and every operator is <c>|</c> (checked with a loop).</summary>
+    private static bool AllTypes(BinaryExpr b)
+    {
+        var chain = b.LeftChain;
+        if (!LooksLikeType(chain[0].Left)) return false;
+        foreach (var node in chain)
+        {
+            if (node.Op != BinOp.BitOr || !LooksLikeType(node.Right)) return false;
+        }
+        return true;
+    }
 
     private Signature SignatureOf(DefStmt d, Scope scope)
     {
@@ -350,8 +375,10 @@ public sealed class TypeChecker
         _recorded[name] = scope.Vars[name];
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]   // see InferTuple
     private void Stmt(Stmt stmt, Scope scope)
     {
+        StackGuard.CheckSyntax();
         switch (stmt)
         {
             case StatementsStmt s:
@@ -456,16 +483,21 @@ public sealed class TypeChecker
         }
     }
 
-    private static bool AlwaysReturns(Stmt s) => s switch
+    private static bool AlwaysReturns(Stmt s)
     {
-        ReturnStmt => true,
-        StatementsStmt { Statements: var xs } => xs.Any(AlwaysReturns),
-        IfStmt { Else: { } e } i => AlwaysReturns(i.Then) && AlwaysReturns(e),
-        _ => false,
-    };
+        StackGuard.CheckSyntax();
+        return s switch
+        {
+            ReturnStmt => true,
+            StatementsStmt { Statements: var xs } => xs.Any(AlwaysReturns),
+            IfStmt { Else: { } e } i => AlwaysReturns(i.Then) && AlwaysReturns(e),
+            _ => false,
+        };
+    }
 
     private void AssignTo(AssignTarget target, Ty value, Scope scope)
     {
+        StackGuard.CheckSyntax();
         switch (target)
         {
             case IdentTarget id:
@@ -517,8 +549,10 @@ public sealed class TypeChecker
 
     // ---------------------------------------------------------------- expressions
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]   // on the stack once per level of nesting: see InferTuple
     private Ty Infer(Expr e, Scope scope)
     {
+        StackGuard.CheckSyntax();
         switch (e)
         {
             case IntLiteral: return Ty.Int;
@@ -538,34 +572,25 @@ public sealed class TypeChecker
                 return Ty.Any;
 
             case TupleExpr t:
-                return new Ty.TupleTy(t.Items.Select(i => Infer(i, scope)).ToList());
-
+                return InferTuple(t, scope);
             case ListExpr l:
-                return new Ty.ListTy(Ty.Union(l.Items.Select(i => Infer(i, scope))));
-
+                return InferList(l, scope);
             case DictExpr d:
-            {
-                var keys = new List<Ty>();
-                var values = new List<Ty>();
-                foreach (var (k, v) in d.Entries)
-                {
-                    keys.Add(Infer(k, scope));
-                    values.Add(Infer(v, scope));
-                }
-                return new Ty.DictTy(Ty.Union(keys), Ty.Union(values));
-            }
+                return InferDict(d, scope);
 
             case NotExpr n:
                 Infer(n.Operand, scope);
                 return Ty.Bool;
 
-            case MinusExpr or PlusExpr:
-                return Unary(e, ((dynamic)e).Operand, scope, e is MinusExpr ? "-" : "+", Ty.Union([Ty.Int, Ty.Float]));
+            case MinusExpr m:
+                return Unary(e, m.Operand, scope, "-", Ty.Union([Ty.Int, Ty.Float]));
+            case PlusExpr p:
+                return Unary(e, p.Operand, scope, "+", Ty.Union([Ty.Int, Ty.Float]));
             case BitNotExpr bn:
                 return Unary(e, bn.Operand, scope, "~", Ty.Int);
 
             case BinaryExpr b:
-                return BinaryResult(b.Op, Infer(b.Left, scope), Infer(b.Right, scope), b.Span);
+                return InferBinary(b, scope);
 
             case IfExpr ie:
                 Infer(ie.Condition, scope);
@@ -583,38 +608,98 @@ public sealed class TypeChecker
                 return Ty.Any;
 
             case SliceExpr sl:
-            {
-                var target = Infer(sl.Target, scope);
-                if (sl.Start is not null) Infer(sl.Start, scope);
-                if (sl.Stop is not null) Infer(sl.Stop, scope);
-                if (sl.Step is not null) Infer(sl.Step, scope);
-                return target is Ty.Name { TypeName: "str" or "bytes" } or Ty.ListTy or Ty.TupleOfTy ? target
-                    : target is Ty.TupleTy tt ? new Ty.TupleOfTy(Ty.Union(tt.Items)) : Ty.Any;
-            }
+                return InferSlice(sl, scope);
 
             case CallExpr call:
                 return Call(call, scope);
 
             case LambdaExpr lam:
-            {
-                var inner = new Scope(scope) { InFunction = true };
-                foreach (var p in lam.Parameters.Where(p => p.Name is not null)) Bind(inner, p.Name!.Name, Ty.Any);
-                Infer(lam.Body, inner);
-                return Ty.Callable;
-            }
+                return InferLambda(lam, scope);
 
             case ListComprehension lc:
-            {
-                var inner = ComprehensionScope(lc.First, lc.Rest, scope);
-                return new Ty.ListTy(Infer(lc.Item, inner));
-            }
+                return InferListComprehension(lc, scope);
             case DictComprehension dc:
-            {
-                var inner = ComprehensionScope(dc.First, dc.Rest, scope);
-                return new Ty.DictTy(Infer(dc.Key, inner), Infer(dc.Value, inner));
-            }
+                return InferDictComprehension(dc, scope);
         }
         return Approximate("unhandled expression " + e.GetType().Name, e.Span);
+    }
+
+    // The larger cases of Infer live in their own methods, so the frame of Infer itself, which is on the stack once per level
+    // of nesting, stays small. NoInlining keeps the JIT from folding them back in; AggressiveOptimization compiles them
+    // optimized on first use, since unoptimized (tier-0) frames are several times larger and a program nested 1000 deep
+    // (the parser's limit) must be checkable on an ordinary 1 MB thread the first time it is seen.
+
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    private Ty InferTuple(TupleExpr t, Scope scope)
+    {
+        var items = new List<Ty>(t.Items.Count);
+        foreach (var i in t.Items) items.Add(Infer(i, scope));
+        return new Ty.TupleTy(items);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    private Ty InferList(ListExpr l, Scope scope)
+    {
+        var items = new List<Ty>(l.Items.Count);
+        foreach (var i in l.Items) items.Add(Infer(i, scope));
+        return new Ty.ListTy(Ty.Union(items));
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    private Ty InferDict(DictExpr d, Scope scope)
+    {
+        var keys = new List<Ty>();
+        var values = new List<Ty>();
+        foreach (var (k, v) in d.Entries)
+        {
+            keys.Add(Infer(k, scope));
+            values.Add(Infer(v, scope));
+        }
+        return new Ty.DictTy(Ty.Union(keys), Ty.Union(values));
+    }
+
+    /// <summary>A long chain <c>a + b + c + ...</c> nests on the left: it is inferred with a loop, not one call per operator.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    private Ty InferBinary(BinaryExpr b, Scope scope)
+    {
+        var chain = b.LeftChain;
+        var left = Infer(chain[0].Left, scope);
+        foreach (var node in chain) left = BinaryResult(node.Op, left, Infer(node.Right, scope), node.Span);
+        return left;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    private Ty InferSlice(SliceExpr sl, Scope scope)
+    {
+        var target = Infer(sl.Target, scope);
+        if (sl.Start is not null) Infer(sl.Start, scope);
+        if (sl.Stop is not null) Infer(sl.Stop, scope);
+        if (sl.Step is not null) Infer(sl.Step, scope);
+        return target is Ty.Name { TypeName: "str" or "bytes" } or Ty.ListTy or Ty.TupleOfTy ? target
+            : target is Ty.TupleTy tt ? new Ty.TupleOfTy(Ty.Union(tt.Items)) : Ty.Any;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    private Ty InferLambda(LambdaExpr lam, Scope scope)
+    {
+        var inner = new Scope(scope) { InFunction = true };
+        foreach (var p in lam.Parameters.Where(p => p.Name is not null)) Bind(inner, p.Name!.Name, Ty.Any);
+        Infer(lam.Body, inner);
+        return Ty.Callable;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    private Ty InferListComprehension(ListComprehension lc, Scope scope)
+    {
+        var inner = ComprehensionScope(lc.First, lc.Rest, scope);
+        return new Ty.ListTy(Infer(lc.Item, inner));
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    private Ty InferDictComprehension(DictComprehension dc, Scope scope)
+    {
+        var inner = ComprehensionScope(dc.First, dc.Rest, scope);
+        return new Ty.DictTy(Infer(dc.Key, inner), Infer(dc.Value, inner));
     }
 
     /// <summary>
@@ -901,19 +986,40 @@ public sealed class TypeChecker
 
     // ---------------------------------------------------------------- calls
 
+    /// <summary>
+    /// A call. The recursive part (inferring the arguments, then the receiver or callee) is done here, in a small frame, and
+    /// the analysis of the call in <see cref="CallResult"/>, whose large frame is never on the stack during the recursion:
+    /// <c>f(g(h(...)))</c> nests one <see cref="Infer"/> and one <c>Call</c> per level.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Ty Call(CallExpr call, Scope scope)
     {
         // Infer every argument first, so errors inside them are always reported.
+        var argTys = new Ty[call.Args.Count];
+        for (int i = 0; i < argTys.Length; i++) argTys[i] = Infer(call.Args[i].Value, scope);
+        Ty? calleeTy = call.Function switch
+        {
+            DotExpr dot => Infer(dot.Target, scope),
+            IdentExpr => null,
+            var other => Infer(other, scope),
+        };
+        return CallResult(call, argTys, calleeTy, scope);
+    }
+
+    /// <param name="calleeTy">The receiver's type for a method call, the callee's for a call of an expression, null for a name.</param>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private Ty CallResult(CallExpr call, Ty[] argTys, Ty? calleeTy, Scope scope)
+    {
         var pos = new List<(Ty Ty, Span Span)>();
         var named = new List<(string Name, Ty Ty, Span Span)>();
         bool hasStar = false;
-        foreach (var arg in call.Args)
+        for (int i = 0; i < argTys.Length; i++)
         {
-            var ty = Infer(arg.Value, scope);
+            var arg = call.Args[i];
             switch (arg)
             {
-                case PositionalArgument: pos.Add((ty, arg.Span)); break;
-                case NamedArgument n: named.Add((n.Name.Value, ty, arg.Span)); break;
+                case PositionalArgument: pos.Add((argTys[i], arg.Span)); break;
+                case NamedArgument n: named.Add((n.Name.Value, argTys[i], arg.Span)); break;
                 case StarArgument or StarStarArgument: hasStar = true; break;
             }
         }
@@ -921,7 +1027,7 @@ public sealed class TypeChecker
         // Method call: receiver.method(...)
         if (call.Function is DotExpr dot)
         {
-            var recv = Infer(dot.Target, scope);
+            var recv = calleeTy!;
             var argTypes = pos.Select(p => p.Ty).ToList();
 
             // `json.encode(x)`, `json.decode(s)`, `json.indent(s)`.
@@ -960,7 +1066,7 @@ public sealed class TypeChecker
 
         if (call.Function is not IdentExpr fn)
         {
-            var callee = Infer(call.Function, scope);
+            var callee = calleeTy!;
             if (!Opts(callee).Any(c => c is Ty.AnyTy or Ty.CallableTy or Ty.Custom || c is Ty.Name { TypeName: "function" }))
             {
                 Error(call.Function.Span, $"Call to a non-callable type `{callee}`");
@@ -1008,14 +1114,14 @@ public sealed class TypeChecker
             return Ty.Any;
         }
 
-        var argTys = pos.Select(p => p.Ty).ToList();
+        var positionalTys = pos.Select(p => p.Ty).ToList();
         bool dormant = IsFuturesName(fn.Name) && !_isPredeclared(fn.Name);   // the dialect has not defined it: not ours to check
         if (!dormant && BuiltinSignatures.Functions.TryGetValue(fn.Name, out var builtin))
         {
             CheckArguments(builtin, pos, named, hasStar, call);
-            return BuiltinSignatures.Result(fn.Name, argTys) ?? builtin.Result;
+            return BuiltinSignatures.Result(fn.Name, positionalTys) ?? builtin.Result;
         }
-        return (dormant ? null : BuiltinSignatures.Result(fn.Name, argTys)) ?? Ty.Any;
+        return (dormant ? null : BuiltinSignatures.Result(fn.Name, positionalTys)) ?? Ty.Any;
     }
 
     /// <summary>
