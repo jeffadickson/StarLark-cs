@@ -228,6 +228,26 @@ public class FuzzTests
             }
         });
 
+    /// <summary>
+    /// Random mixes of nesting constructs around the parser's limit of 1000 levels (and far past it), and long operator
+    /// chains: parsing, resolving, running, type checking and printing must each end normally or in an ordinary error, on
+    /// the thread-pool threads the fuzzer runs on (1 MB of stack on Windows). A stack overflow would end the test host.
+    /// </summary>
+    [Fact]
+    public void DeepNestingNeverCrashes() =>
+        Fuzz("nesting", f => f.Rng.Next(4) switch
+        {
+            0 => f.DeepNesting(1000),
+            1 => f.DeepNesting(f.Rng.Next(10, 3000)),
+            2 => f.DeepBlocks(f.Rng.Next(10, 1200)),
+            _ => f.Mutate(f.DeepNesting(990)),
+        }, s =>
+        {
+            Oracle.Run(s);
+            TypecheckNeverCrashes(s);
+            if (Oracle.Parse(s) is { } ast) _ = ast.Statement.ToString();
+        }, iterations: Math.Max(50, Iterations / 10));
+
     [Fact]
     public void ExpressionsNeverCrashTheEvaluator() =>
         Fuzz("interpreter/expressions", f => "result = " + f.Expr(4) + "\n", s => Oracle.Run(s));

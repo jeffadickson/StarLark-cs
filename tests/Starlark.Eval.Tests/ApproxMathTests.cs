@@ -261,7 +261,8 @@ public class ApproxMathTests
         Assert.Throws<StarlarkException>(() => Internal("r = sin()\n"));
         Assert.Throws<StarlarkException>(() => Internal("r = sin(1, 2)\n"));
         Assert.Throws<StarlarkException>(() => Internal("r = sin(x = 1, y = 2)\n"));
-        Assert.Contains("too large", Assert.Throws<StarlarkException>(() => Internal("r = sin(1 << 2000)\n")).RawMessage);
+        // 2^2000, built from shifts below Go's 512 limit, so the error comes from sin and not from the shift.
+        Assert.Contains("too large to convert to float", Assert.Throws<StarlarkException>(() => Internal("r = sin(1 << 500 << 500 << 500 << 500)\n")).RawMessage);
     }
 
     [Fact]

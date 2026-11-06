@@ -83,6 +83,53 @@ public sealed class Fuzzer(int seed)
         return sb.ToString();
     }
 
+    // ---------------------------------------------------------------- strategy 1b: deep nesting
+
+    /// <summary>One level of nesting: the text that opens it, and the text that closes it (empty for prefixes like <c>-</c>).</summary>
+    private static readonly (string Open, string Close)[] Nesters =
+    [
+        ("(", ")"), ("[", "]"), ("{1: ", "}"), ("(1, ", ")"), ("-", ""), ("~", ""), ("+", ""), ("not ", ""), ("lambda: ", ""),
+        ("0 if x else ", ""), ("1 + (", ")"), ("1 < (", ")"), ("f(", ")"), ("[y for y in ", "]"), ("f'{", "}'"), ("x[", "]"),
+        ("a or (", ")"), ("str(", ")"), ("len([", "])"),
+    ];
+
+    /// <summary>
+    /// An expression nested about <paramref name="depth"/> levels deep from a random mix of constructs, sometimes followed by
+    /// a long chain of one operator (which is not nesting). Around the parser's limit of 1000, so both sides of it are hit.
+    /// </summary>
+    public string DeepNesting(int depth)
+    {
+        var closes = new Stack<string>();
+        var sb = new StringBuilder("x = ");
+        int n = Math.Max(1, depth + Rng.Next(-depth / 10, depth / 10 + 1));
+        for (int i = 0; i < n; i++)
+        {
+            var (open, close) = Nesters[Rng.Next(Nesters.Length)];
+            sb.Append(open);
+            closes.Push(close);
+        }
+        sb.Append(Pick(["1", "x", "'s'", "[]", "True"]));
+        while (closes.Count > 0) sb.Append(closes.Pop());
+        if (Rng.Next(3) == 0)
+        {
+            string op = Pick([" + 1", " * 1", " or x", " and x", " | x", " - 1"]);
+            for (int i = Rng.Next(5000); i > 0; i--) sb.Append(op);
+        }
+        return sb.Append('\n').ToString();
+    }
+
+    /// <summary>Blocks (<c>if</c>, <c>for</c>, <c>def</c>) nested about <paramref name="depth"/> levels deep.</summary>
+    public string DeepBlocks(int depth)
+    {
+        var sb = new StringBuilder();
+        int n = Math.Max(1, depth + Rng.Next(-depth / 10, depth / 10 + 1));
+        for (int i = 0; i < n; i++)
+        {
+            sb.Append(' ', i).Append(Rng.Next(3) switch { 0 => "if x:", 1 => $"for v{i} in x:", _ => "def f():" }).Append('\n');
+        }
+        return sb.Append(' ', n).Append("pass\n").ToString();
+    }
+
     // ---------------------------------------------------------------- strategy 2: mutate real programs
 
     public string Mutate(string source)

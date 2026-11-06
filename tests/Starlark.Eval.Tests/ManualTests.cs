@@ -280,12 +280,32 @@ public class ManualTests
     {
         Assert.Equal(1 << 20, Ops.MaxIntBits);
         var it = new Interpreter();
-        var e = Assert.Throws<StarlarkException>(() => it.Execute("t.star", "x = 1 << 2000000\n"));
+        // A left shift is at most 511 bits (as in Go), so the cap is reached by shifting repeatedly.
+        const string pow2 = "def pow2(k):\n    x = 1\n    for i in range(k // 511):\n        x = x << 511\n    return x << (k % 511)\n";
+        var e = Assert.Throws<StarlarkException>(() => it.Execute("t.star", pow2 + "x = pow2(2000000)\n"));
         Assert.Contains("Integer overflow", e.RawMessage);
         Assert.Throws<StarlarkException>(() => it.Execute("t.star", "x = int('7' * 400000)\n"));
         // About 315,000 decimal digits: the largest allowed int has that many.
-        var m = it.Execute("t.star", "n = len(str((1 << 1048575) - 1 + (1 << 1048575)))\n");
+        var m = it.Execute("t.star", pow2 + "n = len(str(pow2(1048575) - 1 + pow2(1048575)))\n");
         Assert.Equal(new BigInteger(315653), m.Globals["n"]);
+    }
+
+    /// <summary>Section 5's paragraph on Go's limits, and the ScriptStackSize row of the settings table.</summary>
+    [Fact]
+    public void TheGoLimitsAreAsTheManualSays()
+    {
+        Assert.Equal(1000, SyntaxLimits.MaxNesting);
+        var it = new Interpreter();
+        Assert.Contains("excessive nesting", Assert.Throws<StarlarkSyntaxException>(() => it.Execute("t.star", "x = " + new string('(', 1001) + "1" + new string(')', 1001) + "\n")).RawMessage);
+        Assert.Equal(BigInteger.One << 511, it.Eval("1 << 511"));
+        Assert.Contains("shift count too large", Assert.Throws<StarlarkException>(() => it.Eval("1 << 512")).RawMessage);
+        Assert.Contains("excessive repeat", Assert.Throws<StarlarkException>(() => it.Eval("'ab' * 1073741824")).RawMessage);
+        Assert.Contains("repeat count", Assert.Throws<StarlarkException>(() => it.Eval("[1] * (1 << 40)")).RawMessage);
+        Assert.Equal(0, it.ScriptStackSize);   // "0 (caller's thread)"
+        Assert.Equal(1000, new Interpreter { Dialect = Dialect.Standard with { EnableRecursion = true } }.MaxCallDepth);
+        string manual = File.ReadAllText(ManualPath);
+        Assert.Contains("| `ScriptStackSize` | 0 (caller's thread) |", manual);
+        Assert.Contains("DEVIATIONS.md#limits", manual);
     }
 
     [Fact]

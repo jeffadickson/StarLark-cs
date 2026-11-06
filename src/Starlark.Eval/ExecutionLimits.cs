@@ -42,8 +42,11 @@ internal static class MemoryBudget
     /// <summary>The same check for a count of elements of <paramref name="elementBytes"/> each.</summary>
     public static void CheckElements(long count, int elementBytes) => Check(checked(count * elementBytes));
 
-    /// <summary>The longest string any one operation may build, in chars, even with no memory limit set (the repetition ceiling).</summary>
-    public const long MaxStringChars = int.MaxValue / 2;
+    /// <summary>
+    /// The longest string any one operation may build, in chars, even with no memory limit set: fewer than 2^30, the same
+    /// ceiling as repetition (<see cref="Ops.MaxRepeatElements"/>, adopted from Starlark-Go).
+    /// </summary>
+    public const long MaxStringChars = Ops.MaxRepeatElements - 1;
 
     /// <summary>
     /// For a string being built piece by piece (<c>replace</c>, <c>str</c> of a container): throws if it would grow to

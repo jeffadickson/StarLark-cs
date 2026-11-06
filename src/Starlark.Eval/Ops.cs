@@ -26,6 +26,12 @@ public static class Ops
     /// </summary>
     public const int MaxIntBits = Starlark.Syntax.BigIntText.MaxBits;
 
+    /// <summary>
+    /// The left shift count must be below this, as in Starlark-Go ("shift count too large: N"). A right shift count has no
+    /// upper limit (any count beyond the int's length gives 0 or -1); both must be non-negative ("negative shift count: N").
+    /// </summary>
+    public const int MaxShiftCount = 512;
+
     /// <summary>Ints at least this many bits long cost extra steps and check the deadline, since one operation on them is slow.</summary>
     private const long LargeIntBits = 1 << 16;
 
@@ -267,8 +273,10 @@ public static class Ops
             case BinOp.LeftShift:
                 if (a is BigInteger x4 && b is BigInteger y4)
                 {
-                    if (y4 < 0) throw new StarlarkException("Negative left shift count");
-                    if (y4 > int.MaxValue) throw new StarlarkException("Integer overflow in left shift");
+                    // Go's rules: the count is non-negative and below 512, whatever is shifted (so a large int is built by
+                    // repeated shifts or by multiplication, both still bounded by the int size cap).
+                    if (y4 < 0) throw new StarlarkException($"negative shift count: {y4}");
+                    if (y4 >= MaxShiftCount) throw new StarlarkException($"shift count too large: {y4}");
                     if (x4.IsZero) return Box(x4);
                     ReserveInt(x4.GetBitLength() + (long)y4, "left shift");
                     return CheckedInt(x4 << (int)y4, "left shift");
@@ -277,7 +285,7 @@ public static class Ops
             case BinOp.RightShift:
                 if (a is BigInteger x5 && b is BigInteger y5)
                 {
-                    if (y5 < 0) throw new StarlarkException("Negative right shift count");
+                    if (y5 < 0) throw new StarlarkException($"negative shift count: {y5}");
                     if (y5 > int.MaxValue) return x5.Sign < 0 ? BigInteger.MinusOne : BigInteger.Zero;
                     return x5 >> (int)y5;
                 }
@@ -363,42 +371,102 @@ public static class Ops
         throw Err.Unsupported("-", a, b);
     }
 
+    /// <summary>
+    /// The repetition ceiling, as in Starlark-Go: a repetition's result must have fewer than 2^30 elements. Elements are chars
+    /// for strings (UTF-16 code units, which is how .NET stores them, whatever <see cref="StringElements"/> mode is in force),
+    /// bytes for bytes, and items for lists and tuples. <see cref="Interpreter.MaxAllocatedBytes"/> is checked as well and is
+    /// usually stricter.
+    /// </summary>
+    public const long MaxRepeatElements = 1L << 30;
+
+    /// <summary>
+    /// <c>seq * n</c>, or null if <paramref name="seq"/> is not a sequence. As in Go, an empty sequence gives an empty result
+    /// for any count; otherwise the count must fit in an int32 ("repeat count N too large"), and a count below 1 gives an
+    /// empty result. Then <see cref="Interpreter.MaxAllocatedBytes"/> is checked, so a host that set it still gets its
+    /// <see cref="ExecutionLimitException"/> (limit "memory") for an oversized result, as documented; then Go's ceiling, a
+    /// result of fewer than <see cref="MaxRepeatElements"/> ("excessive repeat (L * N elements)"). A result under both that
+    /// the process still cannot allocate is a memory-limit error too, not a crash.
+    /// </summary>
     private static object? Repeat(object? seq, BigInteger n)
     {
-        if (n > int.MaxValue) throw new StarlarkException("Repetition count too large");
-        int count = n < 0 ? 0 : (int)n;
+        long length;
         switch (seq)
         {
-            case string s0: MemoryBudget.CheckElements((long)s0.Length * count, 2); break;
-            case StarList l0: MemoryBudget.CheckElements((long)l0.Count * count, 8); break;
-            case StarTuple t0: MemoryBudget.CheckElements((long)t0.Items.Length * count, 8); break;
-            case StarBytes b0: MemoryBudget.CheckElements((long)b0.Value.Length * count, 1); break;
+            case string s0: length = s0.Length; break;
+            case StarUtf16 u0: length = u0.Value.Length; break;
+            case StarBytes b0: length = b0.Value.Length; break;
+            case StarList l0: length = l0.Count; break;
+            case StarTuple t0: length = t0.Items.Length; break;
+            default: return null;
         }
+        int count;
+        if (length == 0)
+        {
+            count = 0;
+        }
+        else
+        {
+            if (n > int.MaxValue || n < int.MinValue) throw new StarlarkException($"repeat count {n} too large");
+            count = n < 1 ? 0 : (int)n;
+        }
+        long total = length * count;   // both fit in 31 bits, so the product fits in a long
+        long checkable = Math.Min(total, long.MaxValue / 8);   // so the byte count below cannot overflow
+        switch (seq)
+        {
+            case string: case StarUtf16: MemoryBudget.CheckElements(checkable, 2); break;
+            case StarBytes: MemoryBudget.CheckElements(checkable, 1); break;
+            default: MemoryBudget.CheckElements(checkable, 8); break;
+        }
+        if (total >= MaxRepeatElements) throw new StarlarkException($"excessive repeat ({length} * {count} elements)");
+        try
+        {
+            return RepeatUnchecked(seq, count, total);
+        }
+        catch (OutOfMemoryException)
+        {
+            // With no MaxAllocatedBytes set, a result under the ceiling can still be more than the machine has (2^30 list
+            // items are 8 GB). The allocation fails before anything is built, so the run can end cleanly.
+            throw new ExecutionLimitException("memory", $"Script tried to build an object of {total} elements, more than the process could allocate");
+        }
+    }
+
+    private static object RepeatUnchecked(object seq, int count, long total)
+    {
         switch (seq)
         {
             case StarUtf16 u:
-                return new StarUtf16((string)Repeat(u.Value, n)!);
+                return new StarUtf16(RepeatString(u.Value, count));
             case string s:
-                if ((long)s.Length * count > int.MaxValue / 2) throw new StarlarkException("Result of repetition is too large");
-                return count == 0 ? "" : new StringBuilder(s.Length * count).Insert(0, s, count).ToString();
+                return RepeatString(s, count);
             case StarBytes b:
             {
-                // The same ceiling as strings, whether or not a memory limit is set.
-                long total = (long)b.Value.Length * count;
-                if (total > int.MaxValue / 2) throw new StarlarkException("Result of repetition is too large");
                 var result = new byte[total];
                 for (long at = 0; at < total; at += b.Value.Length) Buffer.BlockCopy(b.Value, 0, result, (int)at, b.Value.Length);
                 return new StarBytes(result);
             }
             case StarList l:
-                if ((long)l.Count * count > 100_000_000) throw new StarlarkException("Result of repetition is too large");
-                return new StarList(Enumerable.Repeat(l.Items, count).SelectMany(x => x));
-            case StarTuple t:
-                if ((long)t.Items.Length * count > 100_000_000) throw new StarlarkException("Result of repetition is too large");
-                return new StarTuple(Enumerable.Repeat(t.Items, count).SelectMany(x => x).ToArray());
+                return new StarList(RepeatItems(l.Items, count, total));
+            default:
+                return new StarTuple(RepeatItems(((StarTuple)seq).Items, count, total));
         }
-        return null;
     }
+
+    private static object?[] RepeatItems(IReadOnlyList<object?> items, int count, long total)
+    {
+        if (total == 0) return [];
+        var result = new object?[total];
+        int n = items.Count;
+        for (int j = 0; j < n; j++) result[j] = items[j];
+        // Double the filled prefix each time, as Go does.
+        for (long filled = n; filled < total; filled *= 2)
+        {
+            Array.Copy(result, 0, result, filled, Math.Min(filled, total - filled));
+        }
+        return result;
+    }
+
+    private static string RepeatString(string s, int count) =>
+        count == 0 || s.Length == 0 ? "" : new StringBuilder(s.Length * count).Insert(0, s, count).ToString();
 
     public static object? Multiply(object? a, object? b)
     {

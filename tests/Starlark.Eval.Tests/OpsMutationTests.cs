@@ -52,7 +52,8 @@ public class OpsMutationTests
     {
         Assert.True(double.IsPositiveInfinity(Ops.BigToDouble(BigInteger.One << 1200)));
         Assert.True(double.IsNegativeInfinity(Ops.BigToDouble(-(BigInteger.One << 1200))));
-        Assert.Equal("int too large to convert to float", Fails("x = (1 << 2000) + 1.0\n"));
+        // 2^2000, built from shifts below Go's 512 limit.
+        Assert.Equal("int too large to convert to float", Fails("x = (1 << 500 << 500 << 500 << 500) + 1.0\n"));
     }
 
     // ---------------------------------------------------------------- equality and ordering
@@ -243,14 +244,15 @@ public class OpsMutationTests
 
     // ---------------------------------------------------------------- shifts
 
-    /// <summary>Shift counts are validated, and very large right shifts collapse to 0 or -1.</summary>
+    /// <summary>Shift counts are validated with Go's rules (left count in 0..511), and very large right shifts collapse to 0 or -1.</summary>
     [Fact]
     public void ShiftEdgeCases()
     {
-        Assert.Equal("Negative left shift count", Fails("x = 1 << -1\n"));
-        Assert.Equal("Integer overflow in left shift", Fails("x = 1 << (1 << 40)\n"));
-        Assert.Equal(BigInteger.Zero, Val("0 << 2147483647"));   // the largest count still allowed
-        Assert.Equal("Negative right shift count", Fails("x = 1 >> -1\n"));
+        Assert.Equal("negative shift count: -1", Fails("x = 1 << -1\n"));
+        Assert.Equal("shift count too large: 1099511627776", Fails("x = 1 << (1 << 40)\n"));
+        Assert.Equal(BigInteger.Zero, Val("0 << 511"));   // the largest count still allowed
+        Assert.Equal("shift count too large: 512", Fails("x = 0 << 512\n"));
+        Assert.Equal("negative shift count: -1", Fails("x = 1 >> -1\n"));
         Assert.Equal(BigInteger.Zero, Val("5 >> (1 << 40)"));
         Assert.Equal(BigInteger.MinusOne, Val("-5 >> (1 << 40)"));
         Assert.Equal(new BigInteger(2), Val("8 >> 2"));
@@ -307,15 +309,15 @@ public class OpsMutationTests
 
     // ---------------------------------------------------------------- repetition and concatenation
 
-    /// <summary>Repetition limits report the specific problem, and the largest representable count is not mistaken for overflow.</summary>
+    /// <summary>Repetition limits (Go's) report the specific problem, and the largest representable count is not mistaken for overflow.</summary>
     [Fact]
     public void RepetitionLimits()
     {
-        Assert.Equal("Repetition count too large", Fails("x = 'a' * (1 << 40)\n"));
-        Assert.Equal("Result of repetition is too large", Fails("x = 'a' * 2147483647\n"));
-        Assert.Equal("Result of repetition is too large", Fails("x = 'ab' * 1073741824\n"));
-        Assert.Equal("Result of repetition is too large", Fails("x = [0] * 100000001\n"));
-        Assert.Equal("Result of repetition is too large", Fails("x = (0,) * 100000001\n"));
+        Assert.Equal("repeat count 1099511627776 too large", Fails("x = 'a' * (1 << 40)\n"));
+        Assert.Equal("excessive repeat (1 * 2147483647 elements)", Fails("x = 'a' * 2147483647\n"));
+        Assert.Equal("excessive repeat (2 * 1073741824 elements)", Fails("x = 'ab' * 1073741824\n"));
+        Assert.Equal("excessive repeat (1 * 1073741824 elements)", Fails("x = [0] * 1073741824\n"));
+        Assert.Equal("excessive repeat (1 * 1073741824 elements)", Fails("x = (0,) * 1073741824\n"));
         Assert.Equal("", Val("'abc' * 0"));
         Assert.Equal("", Val("'abc' * -5"));
         Assert.Equal("ababab", Val("'ab' * 3"));

@@ -28,6 +28,14 @@ public class ReleaseCandidate1Tests
     private static string Fails(string statements, Interpreter? it = null) =>
         Assert.Throws<StarlarkException>(() => (it ?? New()).Execute("t", statements)).RawMessage;
 
+    /// <summary>
+    /// A Starlark function <c>pow2(k)</c> giving 2**k for any k, built from shifts of at most 511 bits: a left shift count
+    /// must be below 512, as in Go. Tests of the int size cap prepend it and write <c>pow2(1048575)</c> where they used to
+    /// write <c>1 &lt;&lt; 1048575</c>.
+    /// </summary>
+    private const string Pow2 =
+        "def pow2(k):\n    x = 1\n    for i in range(k // 511):\n        x = x << 511\n    return x << (k % 511)\n";
+
     // ---------------------------------------------------------------- #1 #3 #4 #35 #39: host conversion never crashes the host
 
     private static Interpreter WithHostFunctions()
@@ -219,17 +227,17 @@ public class ReleaseCandidate1Tests
 
     /// <summary>Every way of making an int past the cap fails at once with the same message, under any limits.</summary>
     [Theory]
-    [InlineData("x = 1 << 2000000000\n", "left shift")]
-    [InlineData("x = 1 << 1048576\n", "left shift")]
-    [InlineData("x = (1 << 1000000) * (1 << 1000000)\n", "multiplication")]
-    [InlineData("x = 1 << 1048575\ny = x + x\n", "addition")]
-    [InlineData("x = -(1 << 1048575)\ny = x - (1 << 1048575) - 1\n", "subtraction")]
-    [InlineData("x = -(1 << 1048575) - (1 << 1048575)\ny = -x\n", "negation")]
+    [InlineData("x = pow2(1048575) << 1\n", "left shift")]
+    [InlineData("x = pow2(1048100) << 511\n", "left shift")]   // 1,048,100 + 511 bits is past 2^20
+    [InlineData("x = pow2(1000000) * pow2(1000000)\n", "multiplication")]
+    [InlineData("x = pow2(1048575)\ny = x + x\n", "addition")]
+    [InlineData("x = -pow2(1048575)\ny = x - pow2(1048575) - 1\n", "subtraction")]
+    [InlineData("x = -pow2(1048575) - pow2(1048575)\ny = -x\n", "negation")]
     [InlineData("def f():\n    x = 3\n    for i in range(30):\n        x = x * x\nf()\n", "multiplication")]
     public void IntsPastTheCapAreAnError(string program, string operation)
     {
         var sw = Stopwatch.StartNew();
-        string message = Fails(program, New(maxBytes: 64L << 20));
+        string message = Fails(Pow2 + program, New(maxBytes: 64L << 20));
         Assert.Contains("Integer overflow in " + operation, message);
         Assert.Contains($"{Ops.MaxIntBits} bits", message);
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(10), $"took {sw.Elapsed}");
@@ -241,10 +249,10 @@ public class ReleaseCandidate1Tests
     {
         Assert.Equal(1 << 20, Ops.MaxIntBits);
         var max = (BigInteger.One << Ops.MaxIntBits) - 1;
-        Assert.Equal(max, Val("(1 << 1048575) - 1 + (1 << 1048575)"));
-        Assert.Equal(-max, Val("-(1 << 1048575) - (1 << 1048575) + 1"));
-        Assert.Contains("Integer overflow", Fails("x = ((1 << 1048575) - 1 + (1 << 1048575)) + 1\n"));
-        Assert.Contains("Integer overflow", Fails("x = (-(1 << 1048575) - (1 << 1048575)) // -1\n"));
+        Assert.Equal(max, New().Execute("t", Pow2 + "r = pow2(1048575) - 1 + pow2(1048575)\n").Globals["r"]);
+        Assert.Equal(-max, New().Execute("t", Pow2 + "r = -pow2(1048575) - pow2(1048575) + 1\n").Globals["r"]);
+        Assert.Contains("Integer overflow", Fails(Pow2 + "x = (pow2(1048575) - 1 + pow2(1048575)) + 1\n"));
+        Assert.Contains("Integer overflow", Fails(Pow2 + "x = (-pow2(1048575) - pow2(1048575)) // -1\n"));
     }
 
     /// <summary>A huge int literal is a syntax error, found quickly.</summary>
@@ -267,8 +275,8 @@ public class ReleaseCandidate1Tests
         Assert.Contains("too many digits", Fails("x = int('7' * 400000)\n"));
         Assert.Contains("too many digits", Fails("x = int('1' * 1048577, 2)\n"));
         Assert.Equal(new BigInteger(300_000), Val("len(str(int('7' * 300000)))"));
-        Assert.Equal(true, Val("int('f' * 200000, 16) == (1 << 800000) - 1"));
-        Assert.Equal(true, Val("int('-0x' + 'f' * 1000, 0) == -((1 << 4000) - 1)"));
+        Assert.Equal(true, New().Execute("t", Pow2 + "r = int('f' * 200000, 16) == pow2(800000) - 1\n").Globals["r"]);
+        Assert.Equal(true, New().Execute("t", Pow2 + "r = int('-0x' + 'f' * 1000, 0) == -(pow2(4000) - 1)\n").Globals["r"]);
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(10), $"took {sw.Elapsed}");
     }
 
@@ -278,7 +286,7 @@ public class ReleaseCandidate1Tests
     {
         var sw = Stopwatch.StartNew();
         var max = (BigInteger.One << (Ops.MaxIntBits - 1)) * 2 - 1;
-        var m = New().Execute("t", "x = (1 << 1048575) - 1 + (1 << 1048575)\ns = str(x)\nh = '%x' % x\no = '%o' % x\nd = '{:d}'.format(-x)\nj = json.encode(x)\n");
+        var m = New().Execute("t", Pow2 + "x = pow2(1048575) - 1 + pow2(1048575)\ns = str(x)\nh = '%x' % x\no = '%o' % x\nd = '{:d}'.format(-x)\nj = json.encode(x)\n");
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(10), $"took {sw.Elapsed}");
         Assert.Equal(max.ToString(), m.Globals["s"]);
         Assert.Equal(max.ToString(), m.Globals["j"]);
@@ -322,15 +330,15 @@ public class ReleaseCandidate1Tests
         it.MaxSteps = 200_000;
         var sw = Stopwatch.StartNew();
         var e = Assert.Throws<ExecutionLimitException>(() =>
-            it.Execute("t", "x = 1 << 500000\nfor i in range(1000000):\n    y = x * x\n"));
+            it.Execute("t", Pow2 + "x = pow2(500000)\nfor i in range(1000000):\n    y = x * x\n"));
         Assert.Equal("steps", e.Limit);
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(20), $"took {sw.Elapsed}");
     }
 
-    /// <summary>A shift's result counts against the memory budget.</summary>
+    /// <summary>A shift's result counts against the memory budget (a 10 KB budget is passed on the way to 2**1000000).</summary>
     [Fact]
     public void BigIntsCountAgainstTheMemoryBudget() =>
-        Assert.Equal("memory", Assert.Throws<ExecutionLimitException>(() => New(maxBytes: 10_000).Execute("t", "x = 1 << 1000000\n")).Limit);
+        Assert.Equal("memory", Assert.Throws<ExecutionLimitException>(() => New(maxBytes: 10_000).Execute("t", Pow2 + "x = pow2(1000000)\n")).Limit);
 
     /// <summary>json.decode of a number past the cap is an error.</summary>
     [Fact]
@@ -343,7 +351,7 @@ public class ReleaseCandidate1Tests
     [Fact]
     public void BytesRepetitionIsBoundedWithNoLimit()
     {
-        Assert.Equal("Result of repetition is too large", Fails("x = b'ab' * 1500000000\n"));
+        Assert.Equal("excessive repeat (2 * 1500000000 elements)", Fails("x = b'ab' * 1500000000\n"));
         Assert.Equal("b\"ababab\"", Repr.Of(Val("b'ab' * 3")));
         Assert.Equal("b\"\"", Repr.Of(Val("b'ab' * -2")));
         Assert.Equal(new BigInteger(3_000_000), Val("len(b'abc' * 1000000)"));

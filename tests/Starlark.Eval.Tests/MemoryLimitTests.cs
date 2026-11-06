@@ -23,7 +23,8 @@ public class MemoryLimitTests
     [InlineData("x = 'ab' * 100000000\n")]
     [InlineData("x = [0] * 100000000\n")]
     [InlineData("x = (1, 2) * 100000000\n")]
-    [InlineData("x = b'ab' * 2000000000\n")]
+    [InlineData("x = b'ab' * 2000000000\n")]   // past Go's 2^30 ceiling too: the memory limit is checked first
+    [InlineData("x = [0] * 2000000000\n")]
     public void RepetitionIsBounded(string code) => Fails(code);
 
     /// <summary>Concatenation that would pass the limit is refused.</summary>
