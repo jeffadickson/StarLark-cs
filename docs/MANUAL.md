@@ -208,6 +208,14 @@ Deep nesting, cyclic values and huge numbers end in a Starlark error, never a st
 2^20 bits (about 315,000 decimal digits); an operation whose result would be larger fails with "Integer overflow", and
 `int()` of a longer string is an error.
 
+The limits follow Starlark-Go's where it has one: source text may nest at most 1000 levels ("excessive nesting"), a left
+shift count must be below 512 ("shift count too large"), and a repetition (`'ab' * n`, `[x] * n`) must have an int32 count
+and fewer than 2^30 elements in its result ("excessive repeat"). The deepest program the parser accepts also runs on an
+ordinary 1 MB thread. Recursion (with `EnableRecursion`) is capped at 1000 calls and by the stack of the thread the script
+runs on; for deeper recursion raise `MaxCallDepth` and set `ScriptStackSize`, which runs each script on a dedicated thread
+with that much stack (256 MB holds Go's 100,000 calls). Every limit, with its error text and how it compares with Go, is
+in the table in [DEVIATIONS.md](DEVIATIONS.md#limits).
+
 ## 6. Errors
 
 Three exception types reach the host:
@@ -466,6 +474,7 @@ only), `MutantReport` (summarises Stryker.NET mutation runs), `PrettyPrint`, `Se
 | `Cancellation` | none | Host cancellation token. |
 | `MaxAllocatedBytes` | 0 (none) | Largest single string, list, tuple or bytes one operation may build; not a total. |
 | `MaxCallDepth` | 150 (1000 with recursion) | Nested calls before "Maximum call depth exceeded" ("Starlark stack overflow" with recursion); the thread's remaining stack can end a run sooner. |
+| `ScriptStackSize` | 0 (caller's thread) | Bytes of stack for a dedicated thread each run uses, for deep recursion; ignored in the browser. |
 | `StringElements` | `Utf8` | String offsets in UTF-8 bytes or UTF-16 code units. |
 | `AllowGlobalReassign` | false | Let a file assign a global twice. |
 | `TypecheckBeforeExecute` | false | Run the static checker first and refuse programs with errors. |

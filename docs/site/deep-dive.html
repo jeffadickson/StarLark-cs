@@ -170,7 +170,18 @@ spin()</pre>
   BASIC expression evaluator.</li>
   <li>Guards on every recursive path (nesting depth, call depth, cyclic values), on huge numbers (an int may have at most
   2<sup>20</sup> bits, about 315,000 decimal digits, and parsing and printing big ints is not quadratic), and on memory (the size of each new string, list, tuple or bytes value is checked before it is built).</li>
+  <li>Starlark-Go's limits, adopted: source text may nest at most 1000 levels ("excessive nesting", counted on every
+  recursive path of the parser, which a test checks against the parser's call graph), a left shift count must be below
+  512, and a repetition must have an int32 count and fewer than 2<sup>30</sup> elements. The deepest program the parser
+  accepts resolves, runs and type checks on an ordinary 1 MB thread; a chain like <code>1 + 1 + ... + 1</code> is not
+  nesting and is evaluated with a loop at any length. Deep recursion can have a dedicated big-stack thread
+  (<code>ScriptStackSize</code>), which takes it to Go's 100,000 calls.</li>
 </ul>
+<p>A shift of 511 bits is allowed; 512 is Go's limit and the same error here:</p>
+<div data-expect="shift count too large: 512" class="example" data-options="">
+<pre class="code" contenteditable="true" spellcheck="false">print(len(str(1 &lt;&lt; 511)), "digits")
+print(1 &lt;&lt; 512)</pre>
+</div>
 <p>The first five-hour soak found 116 failing rounds and 6 hangs. All were fixed and each has a regression test.</p>
 </section>
 

@@ -14,7 +14,45 @@ This port follows the Starlark spec and the starlark-rust behaviour. Where it di
 - **Recursion is an error**, per the spec, and call depth is also capped at 150. Set `Dialect.EnableRecursion` to allow it, as
   Go's `option:recursion` does: the cap then rises to 1000 (`Interpreter.MaxCallDepth` changes it either way), and a runaway
   recursion ends in the error "Starlark stack overflow: more than N nested calls" long before the process stack runs out.
-  The thread's remaining stack is checked too, so on a small stack the run can end before the cap is reached.
+  The thread's remaining stack is checked too, so on a small stack the run can end before the cap is reached: an ordinary
+  1 MB thread holds about 600 nested calls of a simple function. **This differs from Go**, whose cap is 100,000 frames on
+  goroutine stacks that grow to 1 GB. To go as deep, raise `MaxCallDepth` and set `Interpreter.ScriptStackSize` (for
+  example to 256 MB), which runs each script on its own thread with that stack; 100,000 calls then take about 6 seconds.
+- **Comparison depth is not capped at 10.** Go's `CompareLimit` makes comparing values nested more than 10 deep an error;
+  here such data compares normally, and only nesting deep enough to threaten the stack is an error ("nested too deeply").
+- **Nesting is counted in more places than Go counts it** (see the table below). Both stop at 1000 levels, but Go's parser
+  counts a level per call of certain functions, so the depth it allows depends on the construct (75 parentheses, 987 unary
+  minus, 493 lambdas), while here a level is one bracket, block, unary operator, lambda, `elif` and so on, so 1000 is 1000
+  of anything. Go does not count `elif` chains or `.name`/`[i]`/`(call)` suffixes at all; here each counts, because each
+  makes the tree one level deeper and every walker over the tree recurses through it.
+
+## Limits
+
+Every limit that keeps a script from crashing, hanging or exhausting the host, against Starlark-Go (`go.starlark.net`).
+The parser-side limits throw `StarlarkSyntaxException`, the run-time ones `StarlarkException` unless noted, and the
+budgets `ExecutionLimitException` (whose `Limit` names the budget). All errors are ordinary exceptions: none of these
+limits can end the process.
+
+| Limit | Value | Error text | Compared with Go |
+|---|---|---|---|
+| Nesting of source text (`SyntaxLimits.MaxNesting`) | 1000 levels: brackets, blocks, `elif`, lambdas, unary operators, `not`, right operands, conditionals, f-strings, suffixes | "Parse error: excessive nesting: ..." | Same limit and phrase; Go counts differently (see above). A chain of one operator (`1 + 1 + ...`) is not nesting and is unlimited, as in Go. |
+| Open brackets in the lexer | 1000 | "Parse error: excessive nesting: more than 1000 open brackets, parentheses or braces" | Same as Go's scanner. |
+| Stack left while parsing or walking a tree | what the thread's stack allows | parser: "excessive nesting: the thread ran out of stack"; run time: "Starlark stack overflow" (in a call) or "Program is nested too deeply" | Go has growable stacks and needs no such check. The deepest tree the parser accepts parses, resolves, runs and type checks on a 1 MB thread. |
+| Repetition count (`s * n`, `b * n`, `l * n`, `t * n`) | must fit in an int32 | "repeat count N too large" | Same. |
+| Repetition result (`Ops.MaxRepeatElements`) | fewer than 2^30 elements: UTF-16 chars, bytes, or items | "excessive repeat (L * N elements)" | Same (Go counts string bytes; .NET strings are UTF-16). Checked after `MaxAllocatedBytes`, so a host that sets it gets a memory error first. |
+| Largest string built piecemeal (`MemoryBudget.MaxStringChars`) | 2^30 - 1 chars | "String result is too large" | Go has no separate limit. |
+| Left shift count | 0 to 511 | "shift count too large: N", "negative shift count: N" | Same. A right shift count has no upper limit (as in Go: any count past the int's size gives 0 or -1). |
+| Int size (`Ops.MaxIntBits`) | 2^20 bits (about 315,000 digits) | "Integer overflow in OP: the result would have more than 1048576 bits" | Go has no limit (its ints grow until memory runs out). Bounds multiplication, which the shift limit does not. |
+| Call depth (`Interpreter.MaxCallDepth`) | 150; 1000 with `EnableRecursion` | "Maximum call depth exceeded"; with recursion "Starlark stack overflow: more than N nested calls" | Go: no cap without recursion (recursion itself is an error), 100,000 with it. See `ScriptStackSize` above. |
+| Call depth in a task (`FutureLimits.MaxTaskCallDepth`) | 100 | "Task call depth exceeded: ..." | Go has no futures. |
+| Comparison, printing, hashing, freezing of nested values | what the thread's stack allows; cycles print as `[...]`/`{...}` | "Value is nested too deeply: maximum recursion depth reached" | Go caps comparison at depth 10 (`CompareLimit`) and prints cycles as `...`; the cap is deliberately not adopted. |
+| JSON encoding depth | 128 | "Value is nested too deeply to serialize to JSON" | Go: no depth limit, a cycle is an error. |
+| Host conversion depth | 32 levels from a host object into a script, 200 from a script value out to a host | "...: nesting is too deep (cyclic?)" | Go has no reflection-based conversion. |
+| Expanding an iterable (`Ops.MaxMaterialized`) | 100,000,000 elements | "Cannot expand ... elements: the limit is 100000000" | Go: none. |
+| Steps (`Interpreter.MaxSteps`) | none by default | `ExecutionLimitException` "steps" | Go's `Thread.SetMaxExecutionSteps`. |
+| Time, cancellation (`Timeout`, `Cancellation`) | none by default | `ExecutionLimitException` "time"; `OperationCanceledException` | Go's `Thread.Cancel`. |
+| Largest single object (`MaxAllocatedBytes`) | none by default | `ExecutionLimitException` "memory" | Go has none. Usually stricter than the repetition ceiling. |
+| Futures (`FutureLimits`) | 4 workers, 10,000 spawns, 1,000 live futures, 8 host operations, 16 MB buffered output | `ExecutionLimitException` "tasks", "host-operations", "memory" | Go has no futures. |
 - **Compared with Starlark-Go** (checked against its own test data, `starlark/testdata`): `chr`, `ord`, `string.codepoints()`,
   `codepoint_ords()`, `elem_ords()`, the `module` type (`json` and `typing` are modules), `json.encode_indent`, positional-only
   `dict.get`, `pop` and `setdefault`, and `ScriptThread` (Go's `Thread`) are all provided. Still different: `assert` is a
