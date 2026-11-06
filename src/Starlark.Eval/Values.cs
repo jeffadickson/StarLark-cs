@@ -535,7 +535,7 @@ public static class Hashing
 {
     public static void CheckHashable(object? v)
     {
-        if (v is StarTuple or StarList) StackGuard.Check();
+        if (v is StarTuple or StarList or StarStruct or StarRecord) StackGuard.Check();
         switch (v)
         {
             case StarList { Frozen: false } or StarDict { Frozen: false } or StarSet { Frozen: false }:
@@ -549,6 +549,13 @@ public static class Hashing
                 break;
             case StarList l:
                 foreach (var x in l.Items) CheckHashable(x);
+                break;
+            // A struct or record is hashable when its fields are, like a tuple, so a key's contents cannot change.
+            case StarStruct st:
+                foreach (var kv in st.Fields) CheckHashable(kv.Value);
+                break;
+            case StarRecord r:
+                foreach (var x in r.Values) CheckHashable(x);
                 break;
         }
     }
@@ -574,7 +581,7 @@ public static class Hashing
 
     public static int Hash(object? v)
     {
-        if (v is StarTuple or StarList or StarDict or StarSet) StackGuard.Check();
+        if (v is StarTuple or StarList or StarDict or StarSet or StarStruct or StarRecord) StackGuard.Check();
         switch (v)
         {
             case IHostValue h: return h.HashValue();
@@ -594,6 +601,13 @@ public static class Hashing
             case StarDict d:
                 return d.Entries.Aggregate(23, (h, kv) => unchecked(h + Hash(kv.Key) * 7 + Hash(kv.Value)));
             case StarSet s: return s.Items.Aggregate(29, (h, x) => unchecked(h + Hash(x)));
+            // These must agree with Ops.Equal: a struct compares its fields in any order, a record its type and values in order.
+            case StarStruct st:
+                return st.Fields.Aggregate(31, (h, kv) => unchecked(h + JavaStringHash(kv.Key) * 7 + Hash(kv.Value)));
+            case StarRecord r:
+                return r.Values.Aggregate(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(r.Type), (h, x) => unchecked(h * 31 + Hash(x)));
+            case StarEnumValue e:
+                return unchecked(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(e.Type) * 31 + e.Index);
             default: return System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(v);
         }
     }
@@ -734,7 +748,7 @@ public static class Repr
             IHostValue h => h.Repr(),
             null => "None",
             bool b => b ? "True" : "False",
-            BigInteger i => i.ToString(),
+            BigInteger i => Syntax.BigIntText.ToString(i, 10),
             double d => FloatToString(d),
             string s => Quote(s),
             StarUtf16 u => "utf16(" + Quote(u.Value) + ")",
@@ -743,7 +757,9 @@ public static class Repr
             StarTuple t => OfTuple(t, active),
             StarDict d => OfDict(d, active),
             StarSet s => OfSet(s, active),
-            StarRange r => r.Step.IsOne ? $"range({r.Start}, {r.Stop})" : $"range({r.Start}, {r.Stop}, {r.Step})",
+            // As the spec and Rust print it: range(10), range(1, 10), range(1, 10, 2).
+            StarRange r => !r.Step.IsOne ? $"range({r.Start}, {r.Stop}, {r.Step})"
+                : r.Start.IsZero ? $"range({r.Stop})" : $"range({r.Start}, {r.Stop})",
             StarElems e => $"{Of(e.Source, active)}.{e.MethodName}()",
             TypeValue t => t.Ty.ToString(),
             StarRecordType rt => $"<record type>",
@@ -769,6 +785,8 @@ public static class Repr
             if (!first) sb.Append(", ");
             first = false;
             sb.Append(Of(x, active));
+            // Many references to one big value can make a repr far larger than any object in the program.
+            MemoryBudget.CheckString(sb.Length);
         }
         return sb.ToString();
     }
@@ -798,6 +816,7 @@ public static class Repr
                 if (!first) sb.Append(", ");
                 first = false;
                 sb.Append(Of(kv.Key, active)).Append(": ").Append(Of(kv.Value, active));
+                MemoryBudget.CheckString(sb.Length);
             }
             return sb.Append('}').ToString();
         }
@@ -822,6 +841,7 @@ public static class Repr
             if (!first) sb.Append(", ");
             first = false;
             sb.Append(kv.Key).Append(" = ").Append(Of(kv.Value, active));
+            MemoryBudget.CheckString(sb.Length);
         }
         return sb.Append(')').ToString();
     }
@@ -834,6 +854,7 @@ public static class Repr
         {
             if (i > 0) sb.Append(", ");
             sb.Append(fld.Name).Append('=').Append(Of(rec.Values[i], active));
+            MemoryBudget.CheckString(sb.Length);
             i++;
         }
         return sb.Append(')').ToString();

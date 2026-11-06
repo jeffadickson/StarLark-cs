@@ -41,4 +41,17 @@ internal static class MemoryBudget
 
     /// <summary>The same check for a count of elements of <paramref name="elementBytes"/> each.</summary>
     public static void CheckElements(long count, int elementBytes) => Check(checked(count * elementBytes));
+
+    /// <summary>The longest string any one operation may build, in chars, even with no memory limit set (the repetition ceiling).</summary>
+    public const long MaxStringChars = int.MaxValue / 2;
+
+    /// <summary>
+    /// For a string being built piece by piece (<c>replace</c>, <c>str</c> of a container): throws if it would grow to
+    /// <paramref name="chars"/> chars, past the memory budget or past <see cref="MaxStringChars"/>.
+    /// </summary>
+    public static void CheckString(long chars)
+    {
+        if (chars > MaxStringChars) throw new StarlarkException("String result is too large");
+        Check(chars * 2);
+    }
 }

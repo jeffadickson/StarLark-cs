@@ -79,7 +79,7 @@ public static partial class Playground
         {
             error = $"internal error: {e.GetType().Name}: {e.Message}";
         }
-        long steps = it.LastRunStats?.Steps ?? 0;
+        long steps = it.LastRunSteps;
         return "{\"output\":" + Json(output.ToString()) + ",\"error\":" + (error is null ? "null" : Json(error)) +
                ",\"ms\":" + clock.Elapsed.TotalMilliseconds.ToString("F1", CultureInfo.InvariantCulture) + ",\"steps\":" + steps + "}";
     }

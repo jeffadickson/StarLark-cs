@@ -166,7 +166,7 @@ internal static class FutureBuiltins
         foreach (var f in futures) CheckSameRun(f, owner);
 
         var any = Task.WhenAny(futures.Select(f => f.Completion));
-        if (!any.Wait(Remaining(owner), owner.Token))
+        if (!ExecutionContext.WaitUntilDeadline(any, owner.DeadlineTicks, owner.Token))
         {
             throw new ExecutionLimitException("time", $"Script exceeded the time limit of {owner.Interpreter.Timeout}");
         }
@@ -174,13 +174,6 @@ internal static class FutureBuiltins
         var winner = futures[index];
         winner.Join(owner);
         return new StarTuple([new System.Numerics.BigInteger(index), winner.Result()]);
-    }
-
-    private static TimeSpan Remaining(ExecutionContext owner)
-    {
-        if (owner.DeadlineTicks == 0) return Timeout.InfiniteTimeSpan;
-        long left = owner.DeadlineTicks - System.Diagnostics.Stopwatch.GetTimestamp();
-        return TimeSpan.FromSeconds(Math.Max(0, (double)left / System.Diagnostics.Stopwatch.Frequency));
     }
 
     // ---------------------------------------------------------------- shared machinery

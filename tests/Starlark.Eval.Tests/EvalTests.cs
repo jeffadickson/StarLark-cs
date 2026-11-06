@@ -287,7 +287,11 @@ public class EvalTests
     [Fact]
     public void RangeBehaviour()
     {
-        Assert.Equal("range(10)".Replace("range(10)", "range(0, 10)"), Repr.Of(Eval("range(10)")));
+        // The spec's form: the start is left out when it is 0 and the step when it is 1.
+        Assert.Equal("range(10)", Repr.Of(Eval("range(10)")));
+        Assert.Equal("range(1, 10)", Repr.Of(Eval("range(1, 10)")));
+        Assert.Equal("range(0, 10, 2)", Repr.Of(Eval("range(0, 10, 2)")));
+        Assert.Equal("range(-3, 10)", Repr.Of(Eval("range(-3, 10)")));
         Assert.Equal("True", R(Eval("range(0, 10, 2) == range(0, 9, 2)")));
         Assert.Equal("True", R(Eval("4 in range(0, 10, 2)")));
         Assert.Equal("False", R(Eval("5 in range(0, 10, 2)")));

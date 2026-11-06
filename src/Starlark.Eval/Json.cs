@@ -70,11 +70,13 @@ public static class JsonModule
         {
             throw new StarlarkException("Value is nested too deeply to serialize to JSON");
         }
+        // The output is one string: keep it within the memory budget as it grows (repeated references can multiply it).
+        MemoryBudget.CheckString(sb.Length);
         switch (v)
         {
             case null: sb.Append("null"); return;
             case bool b: sb.Append(b ? "true" : "false"); return;
-            case BigInteger i: sb.Append(i.ToString(CultureInfo.InvariantCulture)); return;
+            case BigInteger i: sb.Append(Syntax.BigIntText.ToString(i, 10)); return;
             case double d:
                 if (double.IsNaN(d) || double.IsInfinity(d))
                 {
@@ -393,8 +395,10 @@ public static class JsonModule
                 if (double.IsInfinity(d)) throw Error("number out of range");
                 return d;
             }
-            // Integers stay exact at any size.
-            return BigInteger.Parse(num, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture);
+            // Integers stay exact at any size up to the int size cap.
+            var digits = num.AsSpan(num[0] == '-' ? 1 : 0);
+            if (!Syntax.BigIntText.TryParse(digits, 10, out var n, out _)) throw Error("number out of range");
+            return num[0] == '-' ? -n : n;
         }
     }
 

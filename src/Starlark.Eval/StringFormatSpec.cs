@@ -223,7 +223,7 @@ public static partial class StringFormat
                 case 'X': body = ToBase(abs, 16, true); prefix = alt ? "0X" : ""; break;
                 case 'o': body = ToBase(abs, 8, false); prefix = alt ? "0o" : ""; break;
                 case 'b': body = ToBase(abs, 2, false); prefix = alt ? "0b" : ""; break;
-                case 'd' or 'n': body = abs.ToString(Inv); break;
+                case 'd' or 'n': body = ToBase(abs, 10, false); break;
                 default: throw new StarlarkException($"Unknown format code '{type}' for an int");
             }
             if (prec is { } minDigits && body.Length < minDigits) body = new string('0', minDigits - body.Length) + body;

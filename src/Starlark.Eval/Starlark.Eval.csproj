@@ -11,6 +11,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- The int size cap and digit conversion, shared with the lexer (an internal class of each assembly). -->
+    <Compile Include="..\Starlark.Syntax\BigIntText.cs" Link="BigIntText.cs" />
     <EmbeddedResource Include="Lib\**\*.star" LogicalName="std/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 

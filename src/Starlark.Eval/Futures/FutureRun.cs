@@ -31,6 +31,22 @@ public sealed record FutureLimits
     /// <summary>The most worker threads one run may ever create, whatever <see cref="MaxConcurrency"/> says.</summary>
     public const int MaxWorkersCeiling = 64;
 
+    /// <summary>
+    /// The deepest call chain a task may reach (100), counting the calls of the code that started it as well as its own.
+    /// A worker has a large stack but an inline task (<see cref="RunInline"/>) runs on the spawner's, so without a common cap
+    /// a deeply recursive task could succeed with threads and fail inline. Past it the task fails with "Task call depth
+    /// exceeded" in both modes, provided the thread running the script has the usual 1 MB of stack (a much smaller one can
+    /// still run out first when tasks run inline). <see cref="Interpreter.MaxCallDepth"/> applies too, if it is lower.
+    /// </summary>
+    public const int MaxTaskCallDepth = 100;
+
+    /// <summary>
+    /// The most bytes all the tasks of one run may hold in printed-but-not-yet-collected output (default 16 MB, counted as
+    /// UTF-16). Past it the printing task fails with <see cref="ExecutionLimitException"/> (limit "memory"), which ends the
+    /// run. Each task is also held to 8 MB on its own.
+    /// </summary>
+    public long MaxBufferedOutputBytes { get; init; } = 16 * 1024 * 1024;
+
     /// <summary>How long a run waits for tasks to stop when it ends.</summary>
     public TimeSpan GracePeriod { get; init; } = TimeSpan.FromSeconds(5);
 
@@ -39,7 +55,8 @@ public sealed record FutureLimits
     /// results, errors and printed output are the same either way, because a task never sees the spawner's variables and its
     /// output is joined in program order; only the wall-clock overlap is lost. <c>null</c> (the default) chooses automatically:
     /// inline on platforms that cannot start threads (browser WebAssembly and WASI), worker threads everywhere else.
-    /// A host function registered <c>asFuture</c> still returns a future, but inline mode waits for each one in turn.
+    /// Only script tasks are affected: a host function registered <c>asFuture</c> still returns a future at once, and its
+    /// task runs on the host's own scheduler, so several host operations still overlap in inline mode.
     /// </summary>
     public bool? RunInline { get; init; }
 
@@ -147,6 +164,9 @@ internal sealed class FutureRun : IDisposable
         StarFuture future;
         lock (_gate)
         {
+            // Once a task has ended the run on a limit, starting another reports that limit (in both modes), rather than
+            // queuing a task that would only be cancelled.
+            if (_limitFailure is { } failure) throw StarFuture.Fresh(failure);
             if (_closing) throw new StarlarkException("The run is ending: no more tasks can be started");
             if (_spawns >= Limits.MaxSpawns)
             {
@@ -188,7 +208,7 @@ internal sealed class FutureRun : IDisposable
         {
             if (_token.IsCancellationRequested)
             {
-                future.Complete(null, new OperationCanceledException(_token));
+                future.Complete(null, LimitFailure ?? new OperationCanceledException(_token));
                 return;
             }
             try
@@ -233,6 +253,25 @@ internal sealed class FutureRun : IDisposable
             lock (_gate) return _limitFailure;
         }
     }
+
+    private long _bufferedOutput;
+
+    /// <summary>
+    /// Counts <paramref name="bytes"/> of output a task printed and holds until it is collected; throws
+    /// <see cref="ExecutionLimitException"/> ("memory") if all tasks together would hold more than
+    /// <see cref="FutureLimits.MaxBufferedOutputBytes"/> of this run's limits.
+    /// </summary>
+    public void BufferOutput(long bytes)
+    {
+        if (Interlocked.Add(ref _bufferedOutput, bytes) > Limits.MaxBufferedOutputBytes)
+        {
+            Interlocked.Add(ref _bufferedOutput, -bytes);
+            throw new ExecutionLimitException("memory", $"Tasks printed more than {Limits.MaxBufferedOutputBytes} bytes that have not been collected yet");
+        }
+    }
+
+    /// <summary>Gives back output bytes once the task holding them has been collected (or abandoned).</summary>
+    public void ReleaseOutput(long bytes) => Interlocked.Add(ref _bufferedOutput, -bytes);
 
     /// <summary>Counts a call to a host function that returned a task.</summary>
     public void NoteHostCall()

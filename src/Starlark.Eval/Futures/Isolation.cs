@@ -14,6 +14,8 @@ internal static class Isolation
     public static object? Copy(object? value, Dictionary<object, object?> seen, int depth = 0, bool freeze = false)
     {
         if (depth > 200) throw new StarlarkException("Cannot pass a value this deeply nested to a task");
+        // Function defaults that hold functions restart the depth count, so the stack itself is checked too.
+        StackGuard.Check();
         // Each value copied costs one step and counts against the memory ceiling, so a huge argument cannot be copied for free.
         ExecutionContext.Current?.Charge(1);
         switch (value)
@@ -198,26 +200,45 @@ internal static class Isolation
     /// function of a module that is still executing therefore sees the globals as they are now, and nothing the module
     /// binds later. The copy lives in a new, sealed module frame that no other thread writes.
     /// </summary>
+    /// <remarks>
+    /// The functions it reads are snapshotted too, with a worklist rather than recursion, so a chain of thousands of global
+    /// functions (f1 calls f0, f2 calls f1, ...) cannot overflow the spawner's stack.
+    /// </remarks>
     public static StarFunction Snapshot(StarFunction fn, Dictionary<object, object?> seen)
     {
         if (seen.TryGetValue(fn, out var done)) return (StarFunction)done!;
+        var pending = new Queue<(StarFunction Original, StarFunction Copy, Frame Frame)>();
+        var result = Begin(fn, seen, pending);
+        while (pending.Count > 0)
+        {
+            var (original, _, frame) = pending.Dequeue();
+            var module = original.ModuleFrame;
+            foreach (var name in FreeNames(original))
+            {
+                if (module.Locals.Contains(name) && module.Vars.TryGetValue(name, out var value))
+                {
+                    frame.Vars[name] = value is StarFunction other
+                        ? (seen.TryGetValue(other, out var c) ? c : Begin(other, seen, pending))
+                        : Copy(value, seen, 0, freeze: true);
+                }
+            }
+            frame.Sealed = true;
+        }
+        return result;
+    }
+
+    /// <summary>Makes the copy of one function with an empty frame, registers it, and queues the frame to be filled in.</summary>
+    private static StarFunction Begin(StarFunction fn, Dictionary<object, object?> seen,
+        Queue<(StarFunction Original, StarFunction Copy, Frame Frame)> pending)
+    {
         if (CapturesLiveFrame(fn))
         {
             throw new StarlarkException($"A closure over variables of a function that is still running (`{fn.Name}`) cannot cross to a task: define it at module level or pass the values as arguments");
         }
-        var module = fn.ModuleFrame;
-        var free = FreeNames(fn);
-        var frame = new Frame(null, module.Locals, isModule: true);
+        var frame = new Frame(null, fn.ModuleFrame.Locals, isModule: true);
         var copy = fn.WithClosure(frame, d => Copy(d, seen, 0, freeze: true));
         seen[fn] = copy;   // before following references, so functions that call each other terminate
-        foreach (var name in free)
-        {
-            if (module.Locals.Contains(name) && module.Vars.TryGetValue(name, out var value))
-            {
-                frame.Vars[name] = value is StarFunction other ? Snapshot(other, seen) : Copy(value, seen, 0, freeze: true);
-            }
-        }
-        frame.Sealed = true;
+        pending.Enqueue((fn, copy, frame));
         return copy;
     }
 }

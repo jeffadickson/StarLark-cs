@@ -28,9 +28,44 @@ internal sealed class ExecutionContext
         MaxBytes = interpreter.MaxAllocatedBytes;
         Elements = interpreter.StringElements;
         Token = interpreter.Cancellation;
-        DeadlineTicks = interpreter.Timeout is { } t
-            ? System.Diagnostics.Stopwatch.GetTimestamp() + (long)(t.TotalSeconds * System.Diagnostics.Stopwatch.Frequency)
-            : 0;
+        DeadlineTicks = interpreter.Timeout is { } t ? DeadlineAfter(t) : 0;
+    }
+
+    /// <summary>
+    /// Timeouts longer than this (about 100 years) are treated as no deadline, so the tick arithmetic never overflows and a
+    /// <see cref="TimeSpan.MaxValue"/> timeout is simply "unlimited".
+    /// </summary>
+    private static readonly double MaxDeadlineSeconds = 100 * 365.25 * 24 * 3600;
+
+    /// <summary>The <see cref="System.Diagnostics.Stopwatch"/> timestamp <paramref name="t"/> from now, or 0 (none) for a huge timeout.</summary>
+    internal static long DeadlineAfter(TimeSpan t)
+    {
+        double secs = Math.Max(0, t.TotalSeconds);
+        if (secs > MaxDeadlineSeconds) return 0;
+        long ticks = System.Diagnostics.Stopwatch.GetTimestamp() + (long)(secs * System.Diagnostics.Stopwatch.Frequency);
+        return ticks == 0 ? 1 : ticks;
+    }
+
+    /// <summary>
+    /// Waits for <paramref name="task"/> until the absolute <paramref name="deadlineTicks"/> (0 for none) or cancellation. Returns
+    /// false if the deadline passed first. Waits longer than <see cref="Task.Wait(TimeSpan)"/> accepts are done in pieces.
+    /// </summary>
+    internal static bool WaitUntilDeadline(Task task, long deadlineTicks, CancellationToken token)
+    {
+        if (deadlineTicks == 0)
+        {
+            task.Wait(token);
+            return true;
+        }
+        while (true)
+        {
+            long left = deadlineTicks - System.Diagnostics.Stopwatch.GetTimestamp();
+            double secs = Math.Max(0, (double)left / System.Diagnostics.Stopwatch.Frequency);
+            // Task.Wait rejects more than int.MaxValue milliseconds (about 24.8 days).
+            var span = TimeSpan.FromSeconds(Math.Min(secs, 86400));
+            if (task.Wait(span, token)) return true;
+            if (secs <= 86400) return false;
+        }
     }
 
     /// <summary>Creates the context of a task started by <paramref name="parent"/>, with its own slice of the step budget.</summary>
@@ -126,7 +161,6 @@ internal sealed class ExecutionContext
 
     /// <summary>Current call depth.</summary>
     public int Depth { get; set; }
-
     /// <summary>Functions currently on the call stack, for the recursion ban.</summary>
     public HashSet<object> Active { get; private set; } = [];
 
@@ -294,6 +328,7 @@ internal sealed class ExecutionContext
                     owned.Run = null;
                     owned.OwnsRun = false;
                 }
+                owned.Interpreter.RecordSteps(owned.Steps);
                 scope.Dispose();
             }
         }

@@ -77,23 +77,13 @@ public readonly struct TokenInt : IEquatable<TokenInt>
         {
             throw new FormatException("empty integer");
         }
-        BigInteger acc = BigInteger.Zero;
-        foreach (char c in digits)
+        if (radix is < 2 or > 16) throw new ArgumentOutOfRangeException(nameof(radix));
+        // Sub-quadratic, and bounded by the int size cap (BigIntText.MaxBits), so a huge literal is an error, not a hang.
+        if (!BigIntText.TryParse(digits, radix, out var value, out bool tooLarge))
         {
-            int d = c switch
-            {
-                >= '0' and <= '9' => c - '0',
-                >= 'a' and <= 'f' => c - 'a' + 10,
-                >= 'A' and <= 'F' => c - 'A' + 10,
-                _ => throw new FormatException($"bad digit '{c}'"),
-            };
-            if (d >= radix)
-            {
-                throw new FormatException($"bad digit '{c}' for radix {radix}");
-            }
-            acc = acc * radix + d;
+            throw new FormatException(tooLarge ? $"integer literal has more than {BigIntText.MaxBits} bits" : $"bad digit for radix {radix}");
         }
-        return new TokenInt(acc);
+        return new TokenInt(value);
     }
 
     public bool Equals(TokenInt other) => Value == other.Value;

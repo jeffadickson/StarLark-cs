@@ -772,14 +772,14 @@ public sealed class Lexer
 
     private Lexeme IntToken(string digits, int radix)
     {
-        try
+        // Sub-quadratic and bounded by the int size cap, so a huge literal is a clear error rather than a long stall.
+        if (!BigIntText.TryParse(digits, radix, out var value, out bool tooLarge))
         {
-            return Wrap(Token.Int(TokenInt.FromStrRadix(digits, radix)));
+            return tooLarge
+                ? ErrNow(_ => $"Parse error: integer literal is too large: an int may have at most {BigIntText.MaxBits} bits")
+                : ErrNow(MsgIntParse);
         }
-        catch (FormatException)
-        {
-            return ErrNow(MsgIntParse);
-        }
+        return Wrap(Token.Int(new TokenInt(value)));
     }
 
     private Lexeme LexPlain(TokenKind kind)

@@ -72,7 +72,7 @@ public static partial class StringFormat
                 case 'r': sb.Append(Repr.Of(Operand())); break;
                 case 'd':
                 case 'i':
-                    sb.Append(ToInt(Operand()).ToString());
+                    sb.Append(ToBase(ToInt(Operand()), 10, false));
                     break;
                 case 'o': sb.Append(ToBase(ToInt(Operand()), 8, false)); break;
                 case 'x': sb.Append(ToBase(ToInt(Operand()), 16, false)); break;
@@ -130,20 +130,7 @@ public static partial class StringFormat
         _ => throw new StarlarkException($"Format requires a number, got '{Types.Name(v)}'"),
     };
 
-    private static string ToBase(BigInteger v, int b, bool upper)
-    {
-        if (v.IsZero) return "0";
-        bool neg = v < 0;
-        v = BigInteger.Abs(v);
-        string digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
-        var sb = new StringBuilder();
-        while (v > 0)
-        {
-            sb.Insert(0, digits[(int)(v % b)]);
-            v /= b;
-        }
-        return (neg ? "-" : "") + sb;
-    }
+    private static string ToBase(BigInteger v, int b, bool upper) => Syntax.BigIntText.ToString(v, b, upper);
 
     public static string FormatFloat(char spec, double d)
     {

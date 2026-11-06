@@ -267,15 +267,54 @@ public static class Interop
         return new StarStruct(fields);
     }
 
+    /// <summary>The deepest Starlark value <see cref="FromStar"/> and <see cref="FromStarNatural"/> convert; deeper (or cyclic) values are an error.</summary>
+    private const int MaxFromStarDepth = 200;
+
     /// <summary>Converts a Starlark value to a CLR value of the given type.</summary>
-    /// <exception cref="StarlarkException">The value cannot be represented as <paramref name="type"/>.</exception>
+    /// <exception cref="StarlarkException">
+    /// The value cannot be represented as <paramref name="type"/>, is nested too deeply (or is cyclic), or building the CLR
+    /// value failed. No other exception type escapes, whatever the script passed.
+    /// </exception>
     public static object? FromStar(object? value, Type type)
     {
-        if (type == typeof(object)) return FromStarNatural(value);
+        try
+        {
+            return FromStar(value, type, 0);
+        }
+        catch (Exception e) when (e is not (StarlarkException or ExecutionLimitException or OperationCanceledException))
+        {
+            throw ConversionFailed(e, type.Name);
+        }
+    }
+
+    /// <summary>
+    /// The error for a CLR exception raised while building a host value (a constructor or setter that throws, say), so
+    /// that nothing but a Starlark, limit or cancellation exception reaches the host.
+    /// </summary>
+    private static Exception ConversionFailed(Exception e, string target)
+    {
+        var inner = e is TargetInvocationException { InnerException: { } x } ? x : e;
+        if (inner is StarlarkException or ExecutionLimitException or OperationCanceledException)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(inner).Throw();
+        }
+        return new StarlarkException($"Cannot convert to the host type {target}: {inner.Message}");
+    }
+
+    private static void CheckDepth(int depth)
+    {
+        if (depth > MaxFromStarDepth) throw new StarlarkException("Cannot convert to a host value: nesting is too deep (cyclic?)");
+        StackGuard.Check();
+    }
+
+    private static object? FromStar(object? value, Type type, int depth)
+    {
+        CheckDepth(depth);
+        if (type == typeof(object)) return FromStarNatural(value, depth);
         var underlying = Nullable.GetUnderlyingType(type);
         if (underlying is not null)
         {
-            return value is null ? null : FromStar(value, underlying);
+            return value is null ? null : FromStar(value, underlying, depth);
         }
         if (value is null)
         {
@@ -290,7 +329,13 @@ public static class Interop
         if (type == typeof(double) || type == typeof(float) || type == typeof(decimal))
         {
             double d = value switch { double x => x, BigInteger i => Ops.BigToDouble(i), _ => throw Mismatch(value, type) };
-            return type == typeof(double) ? d : type == typeof(float) ? (float)d : (decimal)d;
+            if (type == typeof(decimal))
+            {
+                // A decimal has no NaN or infinity and a much smaller range than a double.
+                if (double.IsNaN(d) || Math.Abs(d) >= 7.9e28) throw DoesNotFit(d, type);
+                return (decimal)d;
+            }
+            return type == typeof(double) ? d : (float)d;
         }
         if (type.IsEnum)
         {
@@ -309,8 +354,21 @@ public static class Interop
                 : type == typeof(ulong) ? (ulong)n : (ushort)n;
         }
         if (type == typeof(byte[])) return value is StarBytes sb ? sb.Value : throw Mismatch(value, type);
-        if (type == typeof(TimeSpan)) return value is double or BigInteger ? TimeSpan.FromSeconds((double)FromStar(value, typeof(double))!) : throw Mismatch(value, type);
-        if (type == typeof(DateTime)) return value is string dts ? DateTime.Parse(dts, null, System.Globalization.DateTimeStyles.RoundtripKind) : throw Mismatch(value, type);
+        if (type == typeof(TimeSpan))
+        {
+            if (value is not (double or BigInteger)) throw Mismatch(value, type);
+            double secs = (double)FromStar(value, typeof(double), depth)!;
+            // Inside a margin of TimeSpan's range, where FromSeconds cannot overflow.
+            if (double.IsNaN(secs) || Math.Abs(secs) >= TimeSpan.MaxValue.TotalSeconds - 1) throw DoesNotFit(secs, type);
+            return TimeSpan.FromSeconds(secs);
+        }
+        if (type == typeof(DateTime))
+        {
+            if (value is not string dts) throw Mismatch(value, type);
+            return DateTime.TryParse(dts, null, System.Globalization.DateTimeStyles.RoundtripKind, out var dt)
+                ? dt
+                : throw new StarlarkException($"Cannot convert `{dts}` to the host type DateTime: not a date and time");
+        }
         if (type == typeof(Guid)) return value is string gs && Guid.TryParse(gs, out var g) ? g : throw Mismatch(value, type);
 
         if (type.IsArray)
@@ -318,7 +376,7 @@ public static class Interop
             var elem = type.GetElementType()!;
             var items = SequenceOf(value, type);
             var arr = Array.CreateInstance(elem, items.Count);
-            for (int i = 0; i < items.Count; i++) arr.SetValue(FromStar(items[i], elem), i);
+            for (int i = 0; i < items.Count; i++) arr.SetValue(FromStar(items[i], elem, depth + 1), i);
             return arr;
         }
         if (type.IsGenericType)
@@ -329,43 +387,68 @@ public static class Interop
             {
                 if (value is not StarDict sd) throw Mismatch(value, type);
                 var dict = (IDictionary)Activator.CreateInstance(typeof(Dictionary<,>).MakeGenericType(args))!;
-                foreach (var (k, v) in sd.Entries) dict.Add(FromStar(k, args[0])!, FromStar(v, args[1]));
+                foreach (var (k, v) in sd.Entries)
+                {
+                    var key = FromStar(k, args[0], depth + 1) ?? throw new StarlarkException($"Cannot convert a dict with a None key to the host type {type.Name}");
+                    dict.Add(key, FromStar(v, args[1], depth + 1));
+                }
                 return dict;
             }
             if (def == typeof(List<>) || def == typeof(IList<>) || def == typeof(IEnumerable<>) || def == typeof(IReadOnlyList<>)
                 || def == typeof(ICollection<>) || def == typeof(IReadOnlyCollection<>))
             {
                 var list = (IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(args))!;
-                foreach (var x in SequenceOf(value, type)) list.Add(FromStar(x, args[0]));
+                foreach (var x in SequenceOf(value, type)) list.Add(FromStar(x, args[0], depth + 1));
                 return list;
             }
             if (def == typeof(HashSet<>) || def == typeof(ISet<>))
             {
                 var set = Activator.CreateInstance(typeof(HashSet<>).MakeGenericType(args))!;
                 var add = set.GetType().GetMethod("Add")!;
-                foreach (var x in SequenceOf(value, type)) add.Invoke(set, [FromStar(x, args[0])]);
+                foreach (var x in SequenceOf(value, type)) add.Invoke(set, [FromStar(x, args[0], depth + 1)]);
                 return set;
             }
         }
-        return Bind(value, type);
+        return Bind(value, type, depth);
     }
 
-    /// <summary>Converts a Starlark value to the natural CLR type: long or BigInteger, double, string, List, Dictionary.</summary>
-    public static object? FromStarNatural(object? value) => value switch
+    /// <summary>
+    /// Converts a Starlark value to the natural CLR type: long or BigInteger, double, string, List, Dictionary. A dict with a
+    /// None key, or a value nested too deeply (or cyclic), is a <see cref="StarlarkException"/>.
+    /// </summary>
+    public static object? FromStarNatural(object? value)
     {
-        null or bool or string or double => value,
-        BigInteger i => i >= long.MinValue && i <= long.MaxValue ? (long)i : i,
-        StarUtf16 u => u.Value,
-        StarBytes b => b.Value,
-        StarList l => l.Items.Select(FromStarNatural).ToList(),
-        StarTuple t => t.Items.Select(FromStarNatural).ToList(),
-        StarSet s => s.Items.Select(FromStarNatural).ToList(),
-        StarDict d => d.Entries.ToDictionary(kv => FromStarNatural(kv.Key)!, kv => FromStarNatural(kv.Value)),
-        StarStruct st => st.Fields.ToDictionary(kv => kv.Key, kv => FromStarNatural(kv.Value)),
-        StarRecord r => r.Type.Fields.Select((fl, i) => (fl.Name, Value: r.Values[i])).ToDictionary(x => x.Name, x => FromStarNatural(x.Value)),
-        StarEnumValue e => e.Value,
-        _ => value,
-    };
+        try
+        {
+            return FromStarNatural(value, 0);
+        }
+        catch (Exception e) when (e is not (StarlarkException or ExecutionLimitException or OperationCanceledException))
+        {
+            throw ConversionFailed(e, "object");
+        }
+    }
+
+    private static object? FromStarNatural(object? value, int depth)
+    {
+        CheckDepth(depth);
+        return value switch
+        {
+            null or bool or string or double => value,
+            BigInteger i => i >= long.MinValue && i <= long.MaxValue ? (long)i : i,
+            StarUtf16 u => u.Value,
+            StarBytes b => b.Value,
+            StarList l => l.Items.Select(x => FromStarNatural(x, depth + 1)).ToList(),
+            StarTuple t => t.Items.Select(x => FromStarNatural(x, depth + 1)).ToList(),
+            StarSet s => s.Items.Select(x => FromStarNatural(x, depth + 1)).ToList(),
+            StarDict d => d.Entries.ToDictionary(
+                kv => FromStarNatural(kv.Key, depth + 1) ?? throw new StarlarkException("Cannot convert a dict with a None key to a host dictionary"),
+                kv => FromStarNatural(kv.Value, depth + 1)),
+            StarStruct st => st.Fields.ToDictionary(kv => kv.Key, kv => FromStarNatural(kv.Value, depth + 1)),
+            StarRecord r => r.Type.Fields.Select((fl, i) => (fl.Name, Value: r.Values[i])).ToDictionary(x => x.Name, x => FromStarNatural(x.Value, depth + 1)),
+            StarEnumValue e => e.Value,
+            _ => value,
+        };
+    }
 
     private static (BigInteger Min, BigInteger Max) IntegerRange(Type t) =>
         t == typeof(int) ? (int.MinValue, int.MaxValue) : t == typeof(long) ? (long.MinValue, long.MaxValue)
@@ -386,7 +469,7 @@ public static class Interop
     };
 
     /// <summary>Builds an instance of <paramref name="type"/> from a struct, record or string-keyed dict.</summary>
-    private static object? Bind(object? value, Type type)
+    private static object? Bind(object? value, Type type, int depth)
     {
         var source = new Dictionary<string, object?>();
         switch (value)
@@ -415,7 +498,7 @@ public static class Interop
         {
             if (Lookup(ps[i].Name!, out var found))
             {
-                args[i] = FromStar(found, ps[i].ParameterType);
+                args[i] = FromStar(found, ps[i].ParameterType, depth + 1);
                 used.Add(ps[i].Name!);
             }
             else if (ps[i].HasDefaultValue)
@@ -431,15 +514,19 @@ public static class Interop
                 throw new StarlarkException($"Cannot convert to {type.Name}: missing field `{SnakeCase(ps[i].Name!)}`");
             }
         }
+        // A constructor or setter that throws is reported as a conversion error (Guarded unwraps TargetInvocationException).
         var instance = ctor.Invoke(args);
         foreach (var p in type.GetProperties(BindingFlags.Public | BindingFlags.Instance).Where(p => p.CanWrite && p.SetMethod!.IsPublic))
         {
             if (used.Contains(p.Name) || ps.Any(x => string.Equals(x.Name, p.Name, StringComparison.OrdinalIgnoreCase))) continue;
-            if (Lookup(p.Name, out var found)) p.SetValue(instance, FromStar(found, p.PropertyType));
+            if (Lookup(p.Name, out var found)) p.SetValue(instance, FromStar(found, p.PropertyType, depth + 1));
         }
         return instance;
     }
 
     private static StarlarkException Mismatch(object? value, Type type) =>
         new($"Cannot convert a value of type '{Types.Name(value)}' to the host type {type.Name}");
+
+    private static StarlarkException DoesNotFit(double d, Type type) =>
+        new($"Value {Repr.FloatToString(d)} does not fit in {type.Name}");
 }

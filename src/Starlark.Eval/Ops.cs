@@ -21,6 +21,48 @@ public static class Ops
     public static object Box(BigInteger v) => v >= BoxMin && v <= BoxMax ? SmallInts[(int)v - BoxMin] : v;
 
     /// <summary>
+    /// The largest int, in bits (see <see cref="Starlark.Syntax.BigIntText.MaxBits"/>): 1,048,576. Every int a script can make
+    /// lies in <c>-2**MaxIntBits &lt;= x &lt; 2**MaxIntBits</c>; an operation whose result would not is a <see cref="StarlarkException"/>.
+    /// </summary>
+    public const int MaxIntBits = Starlark.Syntax.BigIntText.MaxBits;
+
+    /// <summary>Ints at least this many bits long cost extra steps and check the deadline, since one operation on them is slow.</summary>
+    private const long LargeIntBits = 1 << 16;
+
+    /// <summary>The error for an int result past <see cref="MaxIntBits"/>.</summary>
+    internal static StarlarkException IntTooLarge(string what) =>
+        new($"Integer overflow in {what}: the result would have more than {MaxIntBits} bits, the limit on the size of an int");
+
+    /// <summary>Boxes an int result after checking it against the size cap (cheap: one bit-length read).</summary>
+    internal static object CheckedInt(BigInteger v, string what)
+    {
+        long bits = v.GetBitLength();
+        if (bits > MaxIntBits) throw IntTooLarge(what);
+        if (bits >= LargeIntBits) ChargeLargeInt(bits);
+        return Box(v);
+    }
+
+    /// <summary>
+    /// Refuses, before computing it, an int result estimated at <paramref name="bits"/> bits; a large one is checked against
+    /// the memory budget, charged steps in proportion to its size, and checks the deadline.
+    /// </summary>
+    private static void ReserveInt(long bits, string what)
+    {
+        if (bits > MaxIntBits + 1) throw IntTooLarge(what);
+        MemoryBudget.Check(bits / 8);
+        if (bits >= LargeIntBits) ChargeLargeInt(bits);
+    }
+
+    private static void ChargeLargeInt(long bits)
+    {
+        if (ExecutionContext.Current is { } ctx)
+        {
+            ctx.Charge(bits / 4096);
+            ctx.PollNow();
+        }
+    }
+
+    /// <summary>
     /// Converts an int to the nearest double, rounding ties to even. <c>(double)BigInteger</c> truncates instead,
     /// which disagrees with the reference implementations for values above 2^53.
     /// </summary>
@@ -227,7 +269,9 @@ public static class Ops
                 {
                     if (y4 < 0) throw new StarlarkException("Negative left shift count");
                     if (y4 > int.MaxValue) throw new StarlarkException("Integer overflow in left shift");
-                    return x4 << (int)y4;
+                    if (x4.IsZero) return Box(x4);
+                    ReserveInt(x4.GetBitLength() + (long)y4, "left shift");
+                    return CheckedInt(x4 << (int)y4, "left shift");
                 }
                 throw Err.Unsupported("<<", a, b);
             case BinOp.RightShift:
@@ -300,7 +344,7 @@ public static class Ops
     {
         switch (a, b)
         {
-            case (BigInteger x, BigInteger y): return Box(x + y);
+            case (BigInteger x, BigInteger y): return CheckedInt(x + y, "addition");
             case (string x, string y): MemoryBudget.CheckElements((long)x.Length + y.Length, 2); return x + y;
             case (StarUtf16 x, StarUtf16 y): return new StarUtf16(x.Value + y.Value);
             case (StarBytes x, StarBytes y): return new StarBytes([.. x.Value, .. y.Value]);
@@ -313,7 +357,7 @@ public static class Ops
 
     public static object? Subtract(object? a, object? b)
     {
-        if (a is BigInteger x && b is BigInteger y) return Box(x - y);
+        if (a is BigInteger x && b is BigInteger y) return CheckedInt(x - y, "subtraction");
         if (IsNum(a) && IsNum(b)) return ToDouble(a) - ToDouble(b);
         if (a is StarSet s1 && b is StarSet s2) return SetDifference(s1, s2);
         throw Err.Unsupported("-", a, b);
@@ -338,7 +382,14 @@ public static class Ops
                 if ((long)s.Length * count > int.MaxValue / 2) throw new StarlarkException("Result of repetition is too large");
                 return count == 0 ? "" : new StringBuilder(s.Length * count).Insert(0, s, count).ToString();
             case StarBytes b:
-                return new StarBytes(Enumerable.Repeat(b.Value, count).SelectMany(x => x).ToArray());
+            {
+                // The same ceiling as strings, whether or not a memory limit is set.
+                long total = (long)b.Value.Length * count;
+                if (total > int.MaxValue / 2) throw new StarlarkException("Result of repetition is too large");
+                var result = new byte[total];
+                for (long at = 0; at < total; at += b.Value.Length) Buffer.BlockCopy(b.Value, 0, result, (int)at, b.Value.Length);
+                return new StarBytes(result);
+            }
             case StarList l:
                 if ((long)l.Count * count > 100_000_000) throw new StarlarkException("Result of repetition is too large");
                 return new StarList(Enumerable.Repeat(l.Items, count).SelectMany(x => x));
@@ -351,7 +402,13 @@ public static class Ops
 
     public static object? Multiply(object? a, object? b)
     {
-        if (a is BigInteger x && b is BigInteger y) return Box(x * y);
+        if (a is BigInteger x && b is BigInteger y)
+        {
+            if (x.IsZero || y.IsZero) return Box(BigInteger.Zero);
+            long bits = x.GetBitLength() + y.GetBitLength();
+            if (bits > 126) ReserveInt(bits - 1, "multiplication");
+            return CheckedInt(x * y, "multiplication");
+        }
         if (IsNum(a) && IsNum(b)) return ToDouble(a) * ToDouble(b);
         if (b is BigInteger n && Repeat(a, n) is { } r1) return r1;
         if (a is BigInteger m && Repeat(b, m) is { } r2) return r2;
@@ -373,7 +430,7 @@ public static class Ops
             if (y.IsZero) throw new StarlarkException("Integer division by zero");
             var q = BigInteger.DivRem(x, y, out var rem);
             if (!rem.IsZero && (rem.Sign < 0) != (y.Sign < 0)) q -= 1;
-            return Box(q);
+            return CheckedInt(q, "division");   // (-2**MaxIntBits) // -1 is one bit too large
         }
         if (IsNum(a) && IsNum(b))
         {
@@ -409,7 +466,7 @@ public static class Ops
     public static object? Negate(object? v) => v switch
     {
         IHostValue h when h.TryNegate(out var neg) => neg,
-        BigInteger i => -i,
+        BigInteger i => CheckedInt(-i, "negation"),
         double d => -d,
         _ => throw Err.UnsupportedUnary("-", v),
     };
@@ -420,7 +477,7 @@ public static class Ops
         _ => throw Err.UnsupportedUnary("+", v),
     };
 
-    public static object? BitNot(object? v) => v is BigInteger i ? -i - 1 : throw Err.UnsupportedUnary("~", v);
+    public static object? BitNot(object? v) => v is BigInteger i ? CheckedInt(-i - 1, "bitwise not") : throw Err.UnsupportedUnary("~", v);
 
     // ---------------------------------------------------------------- iteration
 
@@ -651,12 +708,37 @@ public static class Ops
             case StarBytes b:
                 return new StarBytes(SliceIndices(b.Value.Length, start, stop, step).Select(i => b.Value[i]).ToArray());
             case StarRange r:
-            {
-                if (r.Count > int.MaxValue) throw new StarlarkException("range too large to slice");
-                var idx = SliceIndices((int)r.Count, start, stop, step);
-                return new StarList(idx.Select(i => (object?)r[i]));
-            }
+                return SliceRange(r, start, stop, step);
         }
         throw new StarlarkException($"Type '{Types.Name(target)}' is not sliceable");
+    }
+
+    /// <summary>
+    /// Slicing a range gives another range (as in the spec, Go and Rust), worked out arithmetically: nothing is enumerated,
+    /// so it costs the same for <c>range(10)</c> and <c>range(1 &lt;&lt; 40)</c>.
+    /// </summary>
+    private static StarRange SliceRange(StarRange r, object? start, object? stop, object? step)
+    {
+        if (start is not null and not BigInteger) throw Err.BadIndex("slice start", start);
+        if (stop is not null and not BigInteger) throw Err.BadIndex("slice stop", stop);
+        if (step is not null and not BigInteger) throw Err.BadIndex("slice step", step);
+        BigInteger st = step is null ? 1 : (BigInteger)step;
+        if (st.IsZero) throw new StarlarkException("Slice step cannot be zero");
+        // The same index rules as SliceIndices, over n = len(r).
+        BigInteger n = r.Count;
+        BigInteger Adjust(BigInteger v) => v < 0 ? v + n : v;
+        BigInteger lo, hi;
+        if (st > 0)
+        {
+            lo = start is null ? 0 : BigInteger.Clamp(Adjust((BigInteger)start), 0, n);
+            hi = stop is null ? n : BigInteger.Clamp(Adjust((BigInteger)stop), 0, n);
+        }
+        else
+        {
+            lo = start is null ? n - 1 : BigInteger.Clamp(Adjust((BigInteger)start), -1, n - 1);
+            hi = stop is null ? -1 : BigInteger.Clamp(Adjust((BigInteger)stop), -1, n - 1);
+        }
+        // Element i of the slice is r[lo + i*st]; the slice ends before index hi. A start of r[-1] is fine: lo == hi then.
+        return new StarRange(r.Start + lo * r.Step, r.Start + hi * r.Step, r.Step * st);
     }
 }

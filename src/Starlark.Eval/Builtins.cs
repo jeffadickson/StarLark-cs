@@ -27,7 +27,7 @@ public static class Builtins
 
         Add(u, "abs", (_, a) => a.Required("x") switch
         {
-            BigInteger i => BigInteger.Abs(i),
+            BigInteger i => Ops.CheckedInt(BigInteger.Abs(i), "abs"),
             double d => Math.Abs(d),
             var v => throw Err.Param("x", "int or float", v),
         });
@@ -160,11 +160,14 @@ public static class Builtins
             // A task's output is held back and printed by whoever collects it, so output order does not depend on scheduling.
             if (ExecutionContext.Current is { Output: { } buffered } task)
             {
-                task.OutputBytes += line.Length * 2L;
-                if (task.OutputBytes > ExecutionContext.MaxTaskOutputBytes)
+                long bytes = line.Length * 2L;
+                if (task.OutputBytes + bytes > ExecutionContext.MaxTaskOutputBytes)
                 {
                     throw new ExecutionLimitException("memory", $"A task printed more than {ExecutionContext.MaxTaskOutputBytes} bytes");
                 }
+                // All the tasks of the run together are capped too, since up to MaxLiveFutures of them may hold output.
+                task.Run?.BufferOutput(bytes);
+                task.OutputBytes += bytes;
                 buffered.Add(line);
             }
             else it.Print(line);
@@ -388,12 +391,13 @@ public static class Builtins
         if (radix == 0) radix = 10;
         if (s.Length == 0) throw new StarlarkException($"Cannot parse `{orig}` as an integer in base {radix}");
 
-        BigInteger acc = 0;
-        foreach (char c in s)
+        // Sub-quadratic and bounded by the int size cap, so a string of a million digits is an error, not a long stall.
+        if (s.Length > 4096) ExecutionContext.Current?.Charge(s.Length / 64);
+        if (!Syntax.BigIntText.TryParse(s, radix, out var acc, out bool tooLarge))
         {
-            int d = c is >= '0' and <= '9' ? c - '0' : c is >= 'a' and <= 'z' ? c - 'a' + 10 : c is >= 'A' and <= 'Z' ? c - 'A' + 10 : 99;
-            if (d >= radix) throw new StarlarkException($"Cannot parse `{orig}` as an integer in base {radix}");
-            acc = acc * radix + d;
+            throw new StarlarkException(tooLarge
+                ? $"int() argument has too many digits: the result would have more than {Ops.MaxIntBits} bits, the limit on the size of an int"
+                : $"Cannot parse `{orig}` as an integer in base {radix}");
         }
         return neg ? -acc : acc;
     }

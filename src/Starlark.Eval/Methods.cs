@@ -235,6 +235,8 @@ public static class Methods
             var cnt = a.OptInt("count");
             a.Done();
             int max = cnt is { } c && c >= 0 ? (int)BigInteger.Min(c, int.MaxValue) : -1;
+            // With an empty `old`, `new` goes between elements; in UTF-8 mode never between the two halves of a surrogate pair.
+            bool wholeCodePoints = Strings.Mode == StringElements.Utf8;
             var sb = new StringBuilder();
             int pos = 0, done = 0;
             while (max < 0 || done < max)
@@ -249,11 +251,14 @@ public static class Methods
                     idx = s.IndexOf(old, pos, StringComparison.Ordinal);
                 }
                 if (idx < 0) break;
+                // The result is checked against the memory budget as it grows, since one call can multiply the size.
+                MemoryBudget.CheckString((long)sb.Length + (idx - pos) + neu.Length + 2);
                 sb.Append(s, pos, idx - pos).Append(neu);
                 if (old.Length == 0)
                 {
-                    if (idx < s.Length) sb.Append(s[idx]);
-                    pos = idx + 1;
+                    int width = wholeCodePoints && idx + 1 < s.Length && char.IsSurrogatePair(s[idx], s[idx + 1]) ? 2 : 1;
+                    if (idx < s.Length) sb.Append(s, idx, width);
+                    pos = idx + width;
                 }
                 else
                 {
@@ -261,7 +266,11 @@ public static class Methods
                 }
                 done++;
             }
-            if (pos < s.Length) sb.Append(s, pos, s.Length - pos);
+            if (pos < s.Length)
+            {
+                MemoryBudget.CheckString((long)sb.Length + s.Length - pos);
+                sb.Append(s, pos, s.Length - pos);
+            }
             return sb.ToString();
         };
 
@@ -310,13 +319,58 @@ public static class Methods
         };
     }
 
+    /// <summary>
+    /// strip, lstrip and rstrip. The cutset is a set of code points (as the spec says), so a surrogate pair is matched and
+    /// removed whole, never half of it.
+    /// </summary>
     private static object Strip(string s, string? cutset, bool left, bool right)
     {
-        bool Strippable(char ch) => cutset is null ? IsSpace(ch) : cutset.Contains(ch);
+        if (cutset is null)
+        {
+            int a = 0, b = s.Length;
+            if (left) while (a < b && IsSpace(s[a])) a++;
+            if (right) while (b > a && IsSpace(s[b - 1])) b--;
+            return s[a..b];
+        }
+        var cut = new HashSet<int>();
+        for (int i = 0; i < cutset.Length;)
+        {
+            i += CodePointAt(cutset, i, out int cp);
+            cut.Add(cp);
+        }
         int st = 0, en = s.Length;
-        if (left) while (st < en && Strippable(s[st])) st++;
-        if (right) while (en > st && Strippable(s[en - 1])) en--;
+        if (left)
+        {
+            while (st < en)
+            {
+                int w = CodePointAt(s, st, out int cp);
+                if (!cut.Contains(cp)) break;
+                st += w;
+            }
+        }
+        if (right)
+        {
+            while (en > st)
+            {
+                int w = en - 2 >= st && char.IsSurrogatePair(s[en - 2], s[en - 1]) ? 2 : 1;
+                CodePointAt(s, en - w, out int cp);
+                if (!cut.Contains(cp)) break;
+                en -= w;
+            }
+        }
         return s[st..en];
+    }
+
+    /// <summary>The code point at <paramref name="i"/> (a lone surrogate counts as itself) and its width in chars.</summary>
+    private static int CodePointAt(string s, int i, out int codePoint)
+    {
+        if (i + 1 < s.Length && char.IsSurrogatePair(s[i], s[i + 1]))
+        {
+            codePoint = char.ConvertToUtf32(s[i], s[i + 1]);
+            return 2;
+        }
+        codePoint = s[i];
+        return 1;
     }
 
     private static object StartsEnds(string s, ArgReader a, bool starts)

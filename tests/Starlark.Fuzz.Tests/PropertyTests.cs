@@ -76,6 +76,44 @@ public class PropertyTests
         select ModelSlice(xs, start, stop, step).SequenceEqual(
             ((StarList)Eval($"{Lit(xs)}[{B(start)}:{B(stop)}:{step}]")!).Items.Select(x => (int)(BigInteger)x!)));
 
+    /// <summary>A range slice is a range with the same elements as the list slice.</summary>
+    [Fact]
+    public void RangeSlicingMatchesListSlicing() => Hold(
+        from start in SmallInt.ForAll()
+        from stop in SmallInt.ForAll()
+        from rstep in Gen.Int32(Range.LinearInt32(-4, 4)).Where(s => s != 0).ForAll()
+        from a in Bound.ForAll()
+        from b in Bound.ForAll()
+        from step in Gen.Int32(Range.LinearInt32(-4, 4)).Where(s => s != 0).ForAll()
+        let r = $"range({start}, {stop}, {rstep})"
+        select Eval($"type({r}[{B(a)}:{B(b)}:{step}])") is "range" &&
+               Ops.Equal(Eval($"list({r}[{B(a)}:{B(b)}:{step}])"), Eval($"list({r})[{B(a)}:{B(b)}:{step}]")));
+
+    /// <summary>Hashing agrees with equality: values that compare equal (structs in any field order, records, ints and floats) hash equally.</summary>
+    [Fact]
+    public void EqualValuesHashEqually()
+    {
+        var scalar = Gen.Frequency(
+            Tuple.Create(3, SmallInt.Select(i => i.ToString(CultureInfo.InvariantCulture))),
+            Tuple.Create(2, SmallInt.Select(i => i.ToString(CultureInfo.InvariantCulture) + ".0")),
+            Tuple.Create(1, Gen.Item(["None", "True", "False", "'a'", "''", "b'x'", "R(a = 1)", "R(a = 1.0)", "R(a = 2)"])));
+        var fields = Gen.Item(["a", "b", "c"]);
+        var value = from kind in Gen.Int32(Range.Constant(0, 2))
+                    from xs in scalar.List(Range.LinearInt32(0, 3))
+                    from names in fields.List(Range.LinearInt32(0, 3))
+                    select kind switch
+                    {
+                        0 => xs.Count > 0 ? xs[0] : "None",
+                        1 => "(" + string.Join(", ", xs) + (xs.Count == 1 ? ",)" : ")"),
+                        _ => "struct(" + string.Join(", ", names.Distinct().Select((n, i) => $"{n} = {(i < xs.Count ? xs[i] : "0")}")) + ")",
+                    };
+        Hold(
+            from x in value.ForAll()
+            from y in value.ForAll()
+            let pair = (StarTuple)New().Execute("t", $"R = record(a = int | float)\nr = ({x}, {y})\n").Globals["r"]!
+            select !Ops.Equal(pair.Items[0], pair.Items[1]) || Hashing.Hash(pair.Items[0]) == Hashing.Hash(pair.Items[1]));
+    }
+
     [Fact]
     public void ReversingTwiceIsTheIdentity() => Hold(
         from xs in IntList.ForAll()

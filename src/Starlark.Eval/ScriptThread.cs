@@ -20,8 +20,10 @@ public sealed record CallFrame(string Name, string Position, int Line, int Colum
 /// <para>
 /// Obtain one by declaring a <c>ScriptThread</c> parameter on a registered function (the script does not see it, as with
 /// <see cref="Interpreter"/> and <see cref="CancellationToken"/>), or from <see cref="Interpreter.CurrentThread"/> inside
-/// any host call. A thread is only meaningful while its run is in progress and only on the thread that is running the script;
-/// reading it afterwards, or from another thread, gives an error.
+/// any host call. A thread is only meaningful while its run is in progress and only on the thread that is running the script.
+/// The call stack, the frames and the thread-locals, and setting <see cref="Name"/>, give an <see cref="InvalidOperationException"/>
+/// afterwards or from another thread. The plain readings <see cref="Name"/>, <see cref="Steps"/> and <see cref="MaxSteps"/> do
+/// not check: afterwards they show the values the run ended with, and from another thread a value that may be out of date.
 /// </para>
 /// <para>
 /// The mapping to Go: <c>Name</c>, <c>Steps</c> (<c>ExecutionSteps</c>), <c>CallStack</c>, <c>CallFrame(depth)</c>,
@@ -57,7 +59,11 @@ public sealed class ScriptThread
     public string Name
     {
         get => _context.Name;
-        set => _context.Name = value;
+        set
+        {
+            Check();
+            _context.Name = value;
+        }
     }
 
     /// <summary>The interpreter this thread belongs to.</summary>

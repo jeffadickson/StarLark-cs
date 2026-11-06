@@ -101,15 +101,41 @@ public sealed class StarFunction : ICallable
         }
     }
 
+    /// <summary>Functions waiting to be frozen by the outermost <see cref="FreezeContents"/> running on this thread, or null if none is.</summary>
+    [ThreadStatic] private static Queue<StarFunction>? _freezeQueue;
+
     /// <summary>Freezing a function freezes its parameter defaults and the variables it captured.</summary>
+    /// <remarks>
+    /// A function reached while another is being frozen is queued and frozen by the outermost call before it returns, rather
+    /// than recursively: a chain of thousands of functions (f1 reads f0, f2 reads f1, ...) would otherwise recurse once per
+    /// function and overflow the stack.
+    /// </remarks>
     internal void FreezeContents()
     {
         if (_frozen) return;
         _frozen = true;
-        foreach (var d in Defaults) Freezer.Freeze(d);
-        for (var f = Closure; f is not null; f = f.Parent)
+        if (_freezeQueue is { } queue)
         {
-            foreach (var v in f.Vars.Values) Freezer.Freeze(v);
+            queue.Enqueue(this);
+            return;
+        }
+        _freezeQueue = queue = new Queue<StarFunction>();
+        try
+        {
+            queue.Enqueue(this);
+            while (queue.Count > 0)
+            {
+                var fn = queue.Dequeue();
+                foreach (var d in fn.Defaults) Freezer.Freeze(d);
+                for (var f = fn.Closure; f is not null; f = f.Parent)
+                {
+                    foreach (var v in f.Vars.Values) Freezer.Freeze(v);
+                }
+            }
+        }
+        finally
+        {
+            _freezeQueue = null;
         }
     }
 }
@@ -194,9 +220,19 @@ public sealed class Interpreter
     /// Statistics of the most recent top-level run that started tasks (spawns, peak live futures, peak concurrency,
     /// leaked tasks), or null if it started none.
     /// </summary>
+    /// <remarks>Use <see cref="LastRunSteps"/> for the step count of every run, whether or not it started tasks.</remarks>
     public Futures.RunStats? LastRunStats { get; private set; }
 
+    /// <summary>
+    /// The steps the most recent outermost run took (an <see cref="Execute(AstModule)"/>, <see cref="Eval"/>,
+    /// <see cref="CallValue"/> or function call made from the host), including the steps of tasks it collected. Set when the
+    /// run ends, whether it succeeded or failed; 0 before the first run. Steps are counted whether or not a limit is set.
+    /// </summary>
+    public long LastRunSteps { get; private set; }
+
     internal void RecordRun(Futures.RunStats stats) => LastRunStats = stats;
+
+    internal void RecordSteps(long steps) => LastRunSteps = steps;
 
     /// <summary>
     /// The unit of string length, indexing and slicing. <see cref="StringElements.Utf8"/> (default) matches the Go and Rust
@@ -259,23 +295,15 @@ public sealed class Interpreter
         try
         {
             var ctx = Ctx;
-            if (ctx.DeadlineTicks != 0)
+            if (!ExecutionContext.WaitUntilDeadline(task, ctx.DeadlineTicks, ctx.Token))
             {
-                long ticksLeft = ctx.DeadlineTicks - System.Diagnostics.Stopwatch.GetTimestamp();
-                var left = TimeSpan.FromSeconds(Math.Max(0, (double)ticksLeft / System.Diagnostics.Stopwatch.Frequency));
-                if (!task.Wait(left, ctx.Token))
-                {
-                    throw new ExecutionLimitException("time", $"Script exceeded the time limit of {Timeout}");
-                }
-            }
-            else
-            {
-                task.Wait(ctx.Token);
+                throw new ExecutionLimitException("time", $"Script exceeded the time limit of {Timeout}");
             }
         }
-        catch (AggregateException e) when (e.InnerExceptions.Count == 1)
+        catch (AggregateException e)
         {
-            var inner = e.InnerExceptions[0];
+            // A task can fault with several exceptions (Task.WhenAll); report the first.
+            var inner = e.Flatten().InnerExceptions.FirstOrDefault() ?? e;
             if (inner is StarlarkException or ExecutionLimitException or OperationCanceledException)
             {
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(inner).Throw();
@@ -375,15 +403,30 @@ public sealed class Interpreter
         return (T)Interop.FromStar(CallValue(f, args.Select(a => Interop.ToStar(a)).ToArray()), typeof(T))!;
     }
 
-    /// <summary>Predeclare a global visible in every module.</summary>
+    /// <summary>
+    /// Predeclare a global visible in every module. It replaces any earlier definition of the name, including the C# signature
+    /// or type that <see cref="Register"/>, <see cref="Expose"/> or <see cref="DefineValue"/> recorded for the type checker.
+    /// </summary>
     public void Define(string name, object? value)
     {
         _universe[name] = value;
         _universeFrozen = false;
+        _hostFunctions.Remove(name);
+        _hostTypes.Remove(name);
     }
 
-    public void Define(string name, Func<Interpreter, IReadOnlyList<object?>, IReadOnlyList<KeyValuePair<string, object?>>, object?> fn) =>
+    /// <summary>
+    /// Predeclare a function that receives the raw Starlark arguments: the interpreter, the positional arguments and the
+    /// keyword arguments, and returns a Starlark value. The type checker treats it as accepting anything. It replaces any
+    /// earlier definition of the name.
+    /// </summary>
+    public void Define(string name, Func<Interpreter, IReadOnlyList<object?>, IReadOnlyList<KeyValuePair<string, object?>>, object?> fn)
+    {
         _universe[name] = new Builtin(name, fn);
+        _universeFrozen = false;
+        _hostFunctions.Remove(name);
+        _hostTypes.Remove(name);
+    }
 
     // ------------------------------------------------------------------ entry points
 
@@ -474,12 +517,17 @@ public sealed class Interpreter
     }
 
     /// <summary>Evaluate a single expression, e.g. <c>Eval("1 + 2")</c>.</summary>
+    /// <exception cref="StarlarkSyntaxException">The text does not parse, or is not a single expression.</exception>
     public object? Eval(string expression)
     {
         var ast = AstModule.Parse("<eval>", "_ = (" + expression + "\n)", Dialect);
+        // Text that closes the wrapper's parenthesis can smuggle in statements; only one plain expression is accepted.
+        if (ast.Statement is not AssignStmt { Target: IdentTarget { Ident.Name: "_" }, Type: null } assign)
+        {
+            throw new StarlarkSyntaxException("Eval expects a single expression", ast.Statement.Span, ast.CodeMap);
+        }
         var names = Resolver.Resolve(ast, _universe.ContainsKey, allowGlobalReassign: true);
         var frame = new Frame(null, names, isModule: true);
-        var assign = (AssignStmt)ast.Statement;
         using var scope = ExecutionContext.EnterRun(this);
         var value = EvalExpr(assign.Value, frame, ast.CodeMap);
         if (scope.IsOutermost) Futures.FutureBuiltins.CheckAllCollected(Ctx);
@@ -819,6 +867,12 @@ public sealed class Interpreter
         var ctx = Ctx;
         bool recursion = Dialect.EnableRecursion;
         int limit = MaxCallDepth;
+        // A task also has its own fixed cap, low enough to be reached before the stack runs out whether the task runs on a
+        // worker thread or inline on the spawner's (smaller) stack, so both modes fail at the same call.
+        if (ctx.IsTask && ctx.Depth < limit && ctx.Depth >= Futures.FutureLimits.MaxTaskCallDepth)
+        {
+            throw new StarlarkException($"Task call depth exceeded: a task's call chain, counting the calls of the code that started it, may be at most {Futures.FutureLimits.MaxTaskCallDepth} deep");
+        }
         if (ctx.Depth >= limit || !System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
         {
             throw new StarlarkException(recursion ? $"Starlark stack overflow: more than {ctx.Depth} nested calls" : "Maximum call depth exceeded");

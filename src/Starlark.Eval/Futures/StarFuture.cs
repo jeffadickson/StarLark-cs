@@ -57,6 +57,7 @@ internal sealed class StarFuture : IHostValue
         owner.Spawned.Remove(this);
         _run.Collected(this);
         Observe();
+        if (IsDone && Context is { } task) _run.ReleaseOutput(task.OutputBytes);
     }
 
     /// <summary>Reads the outcome so a fault is never left unobserved.</summary>
@@ -71,18 +72,9 @@ internal sealed class StarFuture : IHostValue
         if (_done.Task.IsCompleted) return;
         // If another task has already ended the run (a limit, or cancellation), do not wait for this one.
         if (_run.LimitFailure is not null) return;
-        if (waiter.DeadlineTicks != 0)
+        if (!ExecutionContext.WaitUntilDeadline(_done.Task, waiter.DeadlineTicks, waiter.Token))
         {
-            long left = waiter.DeadlineTicks - System.Diagnostics.Stopwatch.GetTimestamp();
-            var span = TimeSpan.FromSeconds(Math.Max(0, (double)left / System.Diagnostics.Stopwatch.Frequency));
-            if (!_done.Task.Wait(span, waiter.Token))
-            {
-                throw new ExecutionLimitException("time", $"Script exceeded the time limit of {waiter.Interpreter.Timeout}");
-            }
-        }
-        else
-        {
-            _done.Task.Wait(waiter.Token);
+            throw new ExecutionLimitException("time", $"Script exceeded the time limit of {waiter.Interpreter.Timeout}");
         }
     }
 
@@ -104,6 +96,7 @@ internal sealed class StarFuture : IHostValue
             {
                 foreach (var line in lines) owner.Interpreter.Print(line);
             }
+            _run.ReleaseOutput(task.OutputBytes);
         }
     }
 
@@ -189,8 +182,10 @@ internal sealed class StarFuture : IHostValue
         var owner = FutureBuiltins.Owner("get");
         FutureBuiltins.CheckSameRun(this, owner);
         Wait(owner);
-        // The wait ends early if the run failed elsewhere; this future may then not have finished, so report that failure.
-        if (!IsDone) throw Fresh(_run.LimitFailure ?? new OperationCanceledException());
+        // If any task ended the run on a limit, report that limit, whether or not this future finished first: which one
+        // did depends on scheduling (and differs between threaded and inline runs), so it must not decide the outcome.
+        if (_run.LimitFailure is { } failure) throw Fresh(failure);
+        if (!IsDone) throw Fresh(new OperationCanceledException());
         Join(owner);
         return Result();
     }

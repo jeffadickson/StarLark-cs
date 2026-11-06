@@ -352,13 +352,16 @@ public class OpsMutationTests
         Assert.Equal("Type 'int' is not sliceable",
             Assert.Throws<StarlarkException>(() => Ops.Slice(new BigInteger(5), null, null, null)).RawMessage);
 
-    /// <summary>A range can be sliced up to the largest size an int index allows, and no further.</summary>
+    /// <summary>Slicing a range gives a range, worked out without enumerating it, so any size of range can be sliced.</summary>
     [Fact]
-    public void RangeSliceSizeLimit()
+    public void RangeSliceIsARangeOfAnySize()
     {
-        Assert.Equal("range too large to slice", Fails("x = range(1 << 40)[1:3]\n"));
-        Assert.Equal("[0, 1]", Repr.Of(Val("range(2147483647)[0:2]")));
-        Assert.Equal("[2, 1, 0]", Repr.Of(Val("range(3)[::-1]")));
+        Assert.Equal("range(1, 3)", Repr.Of(Val("range(1 << 40)[1:3]")));
+        Assert.Equal("range(2)", Repr.Of(Val("range(2147483647)[0:2]")));
+        Assert.Equal("range(2, -1, -1)", Repr.Of(Val("range(3)[::-1]")));
+        Assert.Equal("[2, 1, 0]", Repr.Of(Val("list(range(3)[::-1])")));
+        Assert.Equal("range", Val("type(range(10)[2:])"));
+        Assert.Equal(new BigInteger(1L << 40), Val("len(range(1 << 41)[::2])"));
     }
 
     /// <summary>The unary plus on numbers returns the number unchanged.</summary>
