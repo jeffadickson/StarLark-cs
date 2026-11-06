@@ -318,8 +318,12 @@ internal static class ModuleValidator
 
     // Inside a `for` we allow continue/break, unless we go beneath a `def`. Inside a `def` we allow return.
     // All `load`s must occur at the top level. At the top level we only allow for/if when the dialect permits.
+    // The checks below recurse once per level of nesting; they are compiled optimized on first use, since unoptimized frames
+    // are several times larger and a module nested 1000 deep (the parser's limit) must validate on an ordinary 1 MB stack.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     private static void CheckStmt(Stmt stmt, ParserState st, bool topLevel, bool insideFor, bool insideDef)
     {
+        SyntaxLimits.EnsureStack(st, stmt.Span);
         var span = stmt.Span;
         switch (stmt)
         {
@@ -383,10 +387,18 @@ internal static class ModuleValidator
         }
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
     private static void CheckExpr(Expr x, ParserState st)
     {
+        SyntaxLimits.EnsureStack(st, x.Span);
         switch (x)
         {
+            case BinaryExpr bin:
+                // A long chain `a + b + c + ...` nests on the left: walk it with a loop, not one call per operator.
+                var chain = bin.LeftChain;
+                CheckExpr(chain[0].Left, st);
+                foreach (var node in chain) CheckExpr(node.Right, st);
+                return;
             case EllipsisLiteral when st.Dialect.EnableTypes == DialectTypes.Disable:
                 st.Error(x.Span, "`...` is not allowed in this dialect");
                 break;

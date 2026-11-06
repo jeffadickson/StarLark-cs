@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace Starlark.Syntax;
 
 /// <summary>
@@ -9,11 +11,53 @@ namespace Starlark.Syntax;
 /// <c>ParseForClause</c>, ...) mirror the non-terminals in that grammar. Operator precedence uses the
 /// Pratt algorithm from matklad's "Simple but Powerful Pratt Parsing".
 /// </para>
+/// <para>
+/// Nesting is limited, as in Starlark-Go: every recursive path calls <see cref="Enter"/>, which counts one level and fails
+/// with "excessive nesting" past <see cref="SyntaxLimits.MaxNesting"/> (or when the thread is about to run out of stack), so no
+/// input can overflow the stack. A level is a bracket, parenthesis or brace; a block; a lambda; an <c>elif</c>; the operand of
+/// a unary operator or <c>not</c>; the right operand of a binary operator; the <c>else</c> branch of a conditional; one
+/// <c>.name</c>, <c>[index]</c> or <c>(call)</c> suffix; an f-string field. A chain of binary operators of the same
+/// precedence (<c>a + b + c</c>) is parsed by a loop and is not nesting. The test <c>NestingLimitTests.EveryCycleInTheParserCallGraphCallsEnter</c>
+/// checks that every cycle in this file's call graph passes through a method that calls <see cref="Enter"/>.
+/// </para>
 /// </summary>
 internal sealed class Parser
 {
     private readonly IEnumerator<Lexeme> _tokens;
     private readonly ParserState _state;
+
+    /// <summary>Levels of nesting entered and not yet left (see <see cref="Enter"/>).</summary>
+    private int _depth;
+
+    /// <summary>
+    /// Counts one level of nesting. Fails with "excessive nesting" past <see cref="SyntaxLimits.MaxNesting"/> levels, or if the
+    /// thread is close to running out of stack (a backstop for small thread stacks). Each call is paired with a
+    /// <see cref="Leave"/> on the normal path; an error ends the parse, so nothing is left to unwind.
+    /// </summary>
+    private void Enter()
+    {
+        if (++_depth > SyntaxLimits.MaxNesting)
+        {
+            throw NestingError($"Parse error: excessive nesting: more than {SyntaxLimits.MaxNesting} levels of brackets, blocks or operators");
+        }
+        if (!RuntimeHelpers.TryEnsureSufficientExecutionStack())
+        {
+            throw NestingError($"Parse error: excessive nesting: the thread ran out of stack after {_depth} levels");
+        }
+    }
+
+    private void Leave() => _depth--;
+
+    private StarlarkSyntaxException NestingError(string message)
+    {
+        // A deferred lexer error (the lexer's own bracket limit) is the same failure, seen first.
+        if (_pendingError is { } pending)
+        {
+            _pendingError = null;
+            return pending;
+        }
+        return _current is { } c ? _state.MakeError(SpanOf(c.Start, c.End), message) : _state.MakeError(SpanOf(Pos, Pos), message);
+    }
 
     /// <summary>Current token with its span; null at EOF (or after a deferred lexer error).</summary>
     private Lexeme? _current;
@@ -138,6 +182,7 @@ internal sealed class Parser
 
     // ==================== Statements ====================
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Stmt ParseStmt() => Peek switch
     {
         TokenKind.Def => ParseDefStmt(),
@@ -146,6 +191,7 @@ internal sealed class Parser
         _ => ParseSimpleStmt(),
     };
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Stmt ParseDefStmt()
     {
         int l = Pos;
@@ -160,6 +206,7 @@ internal sealed class Parser
         return new DefStmt(name, parameters, returnType, body, SpanOf(l, _lastEnd));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Stmt ParseIfStmt()
     {
         int l = Pos;
@@ -167,6 +214,7 @@ internal sealed class Parser
         return ParseIfBody(l);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Stmt ParseIfBody(int l)
     {
         var cond = ParseTest();
@@ -177,9 +225,7 @@ internal sealed class Parser
         {
             case TokenKind.Elif:
             {
-                int elL = Pos;
-                Advance();
-                var elseClause = ParseIfBody(elL);
+                var elseClause = ParseElif();
                 return new IfStmt(cond, suite, elseClause, SpanOf(l, elseClause.Span.End));
             }
             case TokenKind.Else:
@@ -194,6 +240,24 @@ internal sealed class Parser
         }
     }
 
+    /// <summary>
+    /// An <c>elif</c> clause, which becomes an <c>if</c> nested in the <c>else</c> branch of the one before. It counts as a
+    /// level of nesting because the tree really does nest one level per clause, and every statement walker (the evaluator,
+    /// the resolver, the checker) recurses through it. Starlark-Go builds the same tree but does not count it, so it accepts
+    /// longer chains (see docs/DEVIATIONS.md).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private Stmt ParseElif()
+    {
+        Enter();
+        int l = Pos;
+        Advance(); // elif
+        var stmt = ParseIfBody(l);
+        Leave();
+        return stmt;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Stmt ParseForStmt()
     {
         int l = Pos;
@@ -208,7 +272,17 @@ internal sealed class Parser
         return new ForStmt(variable, over, body, SpanOf(l, r));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Stmt ParseSuite()
+    {
+        Enter();
+        var suite = ParseSuiteBody();
+        Leave();
+        return suite;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private Stmt ParseSuiteBody()
     {
         if (!PeekIs(TokenKind.Newline))
         {
@@ -234,6 +308,7 @@ internal sealed class Parser
         return GrammarUtil.Statements(stmts, l, r);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Stmt ParseSimpleStmt()
     {
         int l = Pos;
@@ -251,6 +326,7 @@ internal sealed class Parser
         return stmts.Count == 1 ? stmts[0] : new StatementsStmt(stmts, SpanOf(l, r));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Stmt ParseSmallStmt()
     {
         int l = Pos;
@@ -278,6 +354,7 @@ internal sealed class Parser
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Stmt ParseAssignOrExprStmt()
     {
         int l = Pos;
@@ -400,6 +477,7 @@ internal sealed class Parser
     /// A comma-separated list of <c>Test</c>s, producing a tuple if there is more than one or a trailing comma.
     /// With <paramref name="allowTrailingComma"/> false, an unparenthesised tuple ending in a comma is rejected.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Expr ParseTestList(bool allowTrailingComma)
     {
         int l = Pos;
@@ -407,6 +485,7 @@ internal sealed class Parser
         return PeekIs(TokenKind.Comma) ? ParseTestListTail(l, first, allowTrailingComma) : first;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Expr ParseTestListTail(int l, Expr first, bool allowTrailingComma)
     {
         var items = new List<Expr> { first };
@@ -440,6 +519,7 @@ internal sealed class Parser
     /// A comma-separated list of <c>Expr</c> (BitOr level), for assignment targets and <c>for</c> variables.
     /// Excludes comparisons, <c>and</c>, <c>or</c>, <c>not</c>, <c>in</c>. A trailing comma is always rejected.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Expr ParseExprList()
     {
         int l = Pos;
@@ -471,6 +551,7 @@ internal sealed class Parser
         return new TupleExpr(items, SpanOf(l, r));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Expr ParseBitOrExpr()
     {
         var lhs = ParseUnary();
@@ -486,6 +567,7 @@ internal sealed class Parser
         or TokenKind.Plus or TokenKind.Minus or TokenKind.Tilde or TokenKind.Not or TokenKind.Ellipsis;
 
     /// <summary>A <c>Test</c>: includes the ternary and lambda.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Expr ParseTest()
     {
         if (PeekIs(TokenKind.Lambda))
@@ -496,20 +578,25 @@ internal sealed class Parser
     }
 
     /// <summary>An <c>OrTest</c>, used in a ternary condition and comprehension <c>if</c> clauses.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Expr ParseOrTest() => ParseExpr(0);
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Expr ParseLambda() => ParseLambda(allowTernaryBody: true);
 
     /// <summary>A lambda whose body is not allowed to be a ternary (<c>x if y else z</c>), used where a following <c>if</c> must be left alone.</summary>
     private Expr ParseLambdaNoCondition() => ParseLambda(allowTernaryBody: false);
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Expr ParseLambda(bool allowTernaryBody)
     {
+        Enter();
         int l = Pos;
         Advance(); // lambda
         var parameters = ParseCommaSeparatedLambdaParams();
         Expect(TokenKind.Colon);
         var body = allowTernaryBody ? ParseTest() : PeekIs(TokenKind.Lambda) ? ParseLambdaNoCondition() : ParseOrTest();
+        Leave();
         return new LambdaExpr(parameters, body, SpanOf(l, _lastEnd));
     }
 
@@ -561,26 +648,29 @@ internal sealed class Parser
         _ => null,
     };
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Expr ParseExpr(int minBp)
     {
         // `not` is a prefix operator at the level of comparisons: NotTest = "not" NotTest | CompTest,
         // so `not x in y` parses as `not (x in y)`.
-        Expr lhs;
-        if (PeekIs(TokenKind.Not) && minBp <= 5)
-        {
-            int l = Pos;
-            Advance();
-            var e = ParseExpr(5);
-            lhs = new NotExpr(e, SpanOf(l, _lastEnd));
-        }
-        else
-        {
-            lhs = ParseUnary();
-        }
+        var lhs = PeekIs(TokenKind.Not) && minBp <= 5 ? ParseNot() : ParseUnary();
         return ContinueInfix(lhs, minBp);
     }
 
+    /// <summary><c>not x</c>: a level of nesting.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private Expr ParseNot()
+    {
+        Enter();
+        int l = Pos;
+        Advance(); // not
+        var e = ParseExpr(5);
+        Leave();
+        return new NotExpr(e, SpanOf(l, _lastEnd));
+    }
+
     /// <summary>Continue parsing infix operators on an already-parsed left-hand side.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Expr ContinueInfix(Expr lhs, int minBp)
     {
         while (Peek is { } kind)
@@ -600,7 +690,7 @@ internal sealed class Parser
                     throw ErrorExpected("'in' after 'not'");
                 }
                 Advance();
-                var rhs = ParseExpr(rightBp);
+                var rhs = ParseRightOperand(rightBp);
                 lhs = new BinaryExpr(lhs, BinOp.NotIn, rhs, SpanOf(lhs.Span.Begin, rhs.Span.End));
                 RejectChainedComparison();
                 continue;
@@ -615,7 +705,7 @@ internal sealed class Parser
                 break;
             }
             Advance(); // operator
-            var right = ParseExpr(p.Right);
+            var right = ParseRightOperand(p.Right);
             lhs = new BinaryExpr(lhs, p.Op, right, SpanOf(lhs.Span.Begin, right.Span.End));
             if (IsComparison(p.Op))
             {
@@ -625,63 +715,93 @@ internal sealed class Parser
         return lhs;
     }
 
-    private Expr ParseUnary()
+    /// <summary>
+    /// The right operand of a binary operator: a level of nesting, since the tree grows one deeper on the right. A chain of
+    /// operators of one precedence (<c>a + b + c</c>) is parsed by the loop in <see cref="ContinueInfix"/> and grows on the
+    /// left, so it does not accumulate depth here.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private Expr ParseRightOperand(int minBp)
     {
+        Enter();
+        var right = ParseExpr(minBp);
+        Leave();
+        return right;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private Expr ParseUnary() =>
+        Peek is TokenKind.Plus or TokenKind.Minus or TokenKind.Tilde ? ParseUnaryOperator() : ParsePrimary();
+
+    /// <summary><c>-x</c>, <c>+x</c>, <c>~x</c>: a level of nesting.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private Expr ParseUnaryOperator()
+    {
+        Enter();
         int l = Pos;
-        switch (Peek)
+        var kind = Take().Token!.Kind;
+        var operand = ParseUnary();
+        var span = SpanOf(l, _lastEnd);
+        Leave();
+        return kind switch
         {
-            case TokenKind.Plus:
-                Advance();
-                return new PlusExpr(ParseUnary(), SpanOf(l, _lastEnd));
-            case TokenKind.Minus:
-                Advance();
-                return new MinusExpr(ParseUnary(), SpanOf(l, _lastEnd));
-            case TokenKind.Tilde:
-                Advance();
-                return new BitNotExpr(ParseUnary(), SpanOf(l, _lastEnd));
-            default:
-                return ParsePrimary();
-        }
+            TokenKind.Plus => new PlusExpr(operand, span),
+            TokenKind.Minus => new MinusExpr(operand, span),
+            _ => new BitNotExpr(operand, span),
+        };
     }
 
     // ==================== Primary Expressions ====================
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Expr ParsePrimary() => ContinuePrimary(ParseAtom());
 
-    /// <summary>Parse the <c>.attr</c>, <c>[index]</c> and <c>(call)</c> suffixes on an already-parsed expression.</summary>
+    /// <summary>
+    /// Parse the <c>.attr</c>, <c>[index]</c> and <c>(call)</c> suffixes on an already-parsed expression. The loop builds a
+    /// tree one level deeper per suffix, so each suffix counts as a level of nesting (Starlark-Go does not count them; see
+    /// docs/DEVIATIONS.md). The levels are released together when the chain ends.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Expr ContinuePrimary(Expr lhs)
     {
-        while (true)
+        int entered = 0;
+        while (Peek is TokenKind.Dot or TokenKind.OpeningRound or TokenKind.OpeningSquare)
         {
-            int l = lhs.Span.Begin;
-            switch (Peek)
+            lhs = ParseSuffix(lhs);
+            entered++;
+        }
+        _depth -= entered;
+        return lhs;
+    }
+
+    /// <summary>
+    /// One <c>.attr</c>, <c>(call)</c> or <c>[index]</c> suffix: a level of nesting that stays entered until the whole chain
+    /// ends, since each suffix wraps the tree built so far (<see cref="ContinuePrimary"/> leaves them all at once).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private Expr ParseSuffix(Expr lhs)
+    {
+        Enter();
+        int l = lhs.Span.Begin;
+        switch (Take().Token!.Kind)
+        {
+            case TokenKind.Dot:
             {
-                case TokenKind.Dot:
-                {
-                    Advance();
-                    var ident = ParseIdentifierString();
-                    lhs = new DotExpr(lhs, ident, SpanOf(l, _lastEnd));
-                    break;
-                }
-                case TokenKind.OpeningRound:
-                {
-                    Advance();
-                    var args = ParseCommaSeparatedArgs();
-                    Expect(TokenKind.ClosingRound);
-                    int r = _lastEnd;
-                    lhs = CallValidation.CheckCall(lhs, args, _state, SpanOf(l, r));
-                    break;
-                }
-                case TokenKind.OpeningSquare:
-                    Advance();
-                    lhs = ParseIndexOrSlice(lhs, l);
-                    break;
-                default:
-                    return lhs;
+                var ident = ParseIdentifierString();
+                return new DotExpr(lhs, ident, SpanOf(l, _lastEnd));
             }
+            case TokenKind.OpeningRound:
+            {
+                var args = ParseCommaSeparatedArgs();
+                Expect(TokenKind.ClosingRound);
+                return CallValidation.CheckCall(lhs, args, _state, SpanOf(l, _lastEnd));
+            }
+            default:
+                return ParseIndexOrSlice(lhs, l);
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Expr? ParseOptionalSliceBound(TokenKind terminator1, TokenKind? terminator2 = null)
     {
         if (PeekIs(terminator1) || (terminator2 is { } t2 && PeekIs(t2)))
@@ -692,6 +812,7 @@ internal sealed class Parser
     }
 
     /// <summary>After <c>:</c>: parses <c>[stop][:[step]]]</c> and the closing bracket.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Expr FinishSlice(Expr target, Expr? start, int l)
     {
         var stop = ParseOptionalSliceBound(TokenKind.ClosingSquare, TokenKind.Colon);
@@ -704,6 +825,7 @@ internal sealed class Parser
         return new SliceExpr(target, start, stop, step, SpanOf(l, _lastEnd));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Expr ParseIndexOrSlice(Expr expr, int l)
     {
         // [:...] — slice with no start.
@@ -732,7 +854,63 @@ internal sealed class Parser
         }
     }
 
+    /// <summary>An atom. A bracket, parenthesis, brace or f-string is a level of nesting.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Expr ParseAtom()
+    {
+        switch (Peek)
+        {
+            case TokenKind.OpeningRound or TokenKind.OpeningSquare or TokenKind.OpeningCurly or TokenKind.FStringStart:
+                return ParseNestedAtom();
+            case TokenKind.Identifier or TokenKind.Int or TokenKind.Float or TokenKind.String or TokenKind.Bytes or TokenKind.Ellipsis:
+                return ParseLiteralAtom();
+            default:
+                throw ErrorExpected("expression");
+        }
+    }
+
+    /// <summary>A parenthesised expression or tuple, a list, a dict or an f-string: a level of nesting.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private Expr ParseNestedAtom()
+    {
+        Enter();
+        Expr result;
+        switch (Peek)
+        {
+            case TokenKind.FStringStart:
+                result = ParseFString();
+                break;
+            case TokenKind.OpeningSquare:
+                result = ParseListOrComprehension();
+                break;
+            case TokenKind.OpeningCurly:
+                result = ParseDictOrComprehension();
+                break;
+            default:
+                result = ParseParenthesized();
+                break;
+        }
+        Leave();
+        return result;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private Expr ParseParenthesized()
+    {
+        int l = Pos;
+        Advance(); // (
+        if (Eat(TokenKind.ClosingRound))
+        {
+            return new TupleExpr([], SpanOf(l, _lastEnd));
+        }
+        var expr = ParseTestList(true);
+        Expect(TokenKind.ClosingRound);
+        return expr; // parenthesised expressions keep their inner span
+    }
+
+    /// <summary>A name or a literal: no recursion, so its frame (with a local per token kind) is never on the stack twice.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private Expr ParseLiteralAtom()
     {
         switch (Peek)
         {
@@ -761,34 +939,15 @@ internal sealed class Parser
                 var t = Take();
                 return new BytesLiteral(t.Token!.BytesValue!, SpanOf(t.Start, t.End));
             }
-            case TokenKind.FStringStart:
-                return ParseFString();
-            case TokenKind.Ellipsis:
+            default:
             {
                 var t = Take();
                 return new EllipsisLiteral(SpanOf(t.Start, t.End));
             }
-            case TokenKind.OpeningRound:
-            {
-                int l = Pos;
-                Advance();
-                if (Eat(TokenKind.ClosingRound))
-                {
-                    return new TupleExpr([], SpanOf(l, _lastEnd));
-                }
-                var expr = ParseTestList(true);
-                Expect(TokenKind.ClosingRound);
-                return expr; // parenthesised expressions keep their inner span
-            }
-            case TokenKind.OpeningSquare:
-                return ParseListOrComprehension();
-            case TokenKind.OpeningCurly:
-                return ParseDictOrComprehension();
-            default:
-                throw ErrorExpected("expression");
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Expr ParseFString()
     {
         var start = Take();
@@ -838,6 +997,7 @@ internal sealed class Parser
         return GrammarUtil.FStringFromParts(parts, l, _lastEnd, _state);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Expr ParseListOrComprehension()
     {
         int l = Pos;
@@ -869,6 +1029,7 @@ internal sealed class Parser
         return new ListExpr(items, SpanOf(l, _lastEnd));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Expr ParseDictOrComprehension()
     {
         int l = Pos;
@@ -930,6 +1091,7 @@ internal sealed class Parser
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private ForClause ParseForClause()
     {
         Expect(TokenKind.For);
@@ -1033,6 +1195,7 @@ internal sealed class Parser
 
     // ==================== Arguments ====================
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private List<Argument> ParseCommaSeparatedArgs()
     {
         var args = new List<Argument>();
@@ -1051,6 +1214,7 @@ internal sealed class Parser
         return args;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Argument ParseArgument()
     {
         int l = Pos;
@@ -1095,17 +1259,21 @@ internal sealed class Parser
     }
 
     /// <summary>Handle <c>expr if cond else expr</c> after the first expression.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private Expr ContinueTernary(Expr expr)
     {
         if (!PeekIs(TokenKind.If))
         {
             return expr;
         }
+        // The else branch nests: `a if b else c if d else e` is right-recursive.
+        Enter();
         int l = expr.Span.Begin;
         Advance();
         var cond = ParseOrTest();
         Expect(TokenKind.Else);
         var elseExpr = ParseTest();
+        Leave();
         return new IfExpr(cond, expr, elseExpr, SpanOf(l, _lastEnd));
     }
 }

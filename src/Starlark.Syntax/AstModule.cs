@@ -130,6 +130,7 @@ public sealed class AstModule
         var res = new List<FileSpan>();
         void Go(Stmt x)
         {
+            SyntaxLimits.EnsureStack();
             if (x is not StatementsStmt)
             {
                 res.Add(CodeMap.FileSpan(x.Span));

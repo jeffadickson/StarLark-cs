@@ -116,6 +116,10 @@ public sealed class Lexer
     private const string MsgEmptyEscape = "Parse error: missing string escape sequence, only saw `\\`";
     private const string MsgUnfinishedFExpr = "Parse error: f-string expression is missing closing `}`";
 
+    // Go's scanner reports "excessive nesting" past 1000 open brackets; the parser has its own count of every kind of nesting.
+    private static readonly string MsgExcessiveNesting =
+        $"Parse error: excessive nesting: more than {SyntaxLimits.MaxNesting} open brackets, parentheses or braces";
+
     private static string MsgBadEscape(string s) => $"Parse error: invalid string escape sequence `{s}`";
 
     // ---------------------------------------------------------------- comments & indentation
@@ -788,7 +792,7 @@ public sealed class Lexer
         switch (kind)
         {
             case TokenKind.OpeningCurly:
-                _parens++;
+                if (++_parens > SyntaxLimits.MaxNesting) return ErrNow(_ => MsgExcessiveNesting);
                 // Track nested braces in f-string expressions.
                 if (InFStringExprMode)
                 {
@@ -796,11 +800,11 @@ public sealed class Lexer
                 }
                 return Wrap(token);
             case TokenKind.OpeningRound:
-                _parens++;
+                if (++_parens > SyntaxLimits.MaxNesting) return ErrNow(_ => MsgExcessiveNesting);
                 TrackFString(s => s.ParenDepth++);
                 return Wrap(token);
             case TokenKind.OpeningSquare:
-                _parens++;
+                if (++_parens > SyntaxLimits.MaxNesting) return ErrNow(_ => MsgExcessiveNesting);
                 TrackFString(s => s.BracketDepth++);
                 return Wrap(token);
             case TokenKind.ClosingCurly:

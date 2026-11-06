@@ -45,6 +45,13 @@ public readonly record struct Span
 
     /// <summary>Whether the spans intersect. Ends are inclusive.</summary>
     public bool Intersects(Span other) => Contains(other.Begin) || Contains(other.End) || other.Contains(Begin);
+
+    /// <summary>
+    /// <c>Begin..End</c>. Written by hand: the compiler's record <c>ToString</c> prints every property, and <see cref="EndSpan"/>
+    /// is a <see cref="Span"/> whose <see cref="EndSpan"/> is another, so it recursed until the process died of a stack
+    /// overflow (as did the generated <c>ToString</c> of any record holding a span, such as <c>StackFrame</c>).
+    /// </summary>
+    public override string ToString() => $"{Begin}..{End}";
 }
 
 /// <summary>A value with the span it came from.</summary>

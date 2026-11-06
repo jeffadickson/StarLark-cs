@@ -22,6 +22,8 @@
     <Using Include="Xunit" />
     <Content Include="Goldens\**\*.golden" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Testcases\*.star" CopyToOutputDirectory="PreserveNewest" />
+    <!-- NestingLimitTests reads the parser's source to check its call graph. -->
+    <Content Include="..\..\src\Starlark.Syntax\Parser.cs" Link="Source\Parser.cs.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

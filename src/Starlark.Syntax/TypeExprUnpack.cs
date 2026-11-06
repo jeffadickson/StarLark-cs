@@ -80,6 +80,7 @@ internal static class TypeExprUnpack
 
     public static TypeNode Unpack(Expr expr, ParserState st)
     {
+        SyntaxLimits.EnsureStack(st, expr.Span);
         var span = expr.Span;
         switch (expr)
         {
@@ -124,7 +125,19 @@ internal static class TypeExprUnpack
             case BitNotExpr:
                 throw Invalid(st, expr, "bit not");
             case BinaryExpr { Op: BinOp.BitOr } b:
-                return new TypeNode.Union(span, [Unpack(b.Left, st), Unpack(b.Right, st)]);
+            {
+                // `a | b | c` nests on the left, one level per operator; unpack it with a loop (innermost first), keeping
+                // the nested-pair shape the recursive form produced.
+                var chain = b.LeftChain;
+                int first = chain.Count - 1;
+                while (first > 0 && chain[first - 1].Op == BinOp.BitOr) first--;
+                var node = Unpack(chain[first].Left, st);
+                for (int i = first; i < chain.Count; i++)
+                {
+                    node = new TypeNode.Union(chain[i].Span, [node, Unpack(chain[i].Right, st)]);
+                }
+                return node;
+            }
             case BinaryExpr:
                 throw Invalid(st, expr, "bin op except `|`");
             case IfExpr:

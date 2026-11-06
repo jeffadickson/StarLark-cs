@@ -90,7 +90,14 @@ public abstract class Expr(Span span) : Node(span)
         return sb.ToString();
     }
 
-    internal abstract void Write(StringBuilder sb);
+    /// <summary>Writes the expression as source text; the stack is checked first, so even a tree built by hand cannot overflow it.</summary>
+    internal void Write(StringBuilder sb)
+    {
+        SyntaxLimits.EnsureStack();
+        WriteCore(sb);
+    }
+
+    private protected abstract void WriteCore(StringBuilder sb);
 
     internal void WritePostfixReceiver(StringBuilder sb)
     {
@@ -147,7 +154,7 @@ public sealed class TupleExpr(IReadOnlyList<Expr> items, Span span) : Expr(span)
 {
     public IReadOnlyList<Expr> Items { get; } = items;
     public override void VisitExpr(Action<Expr> f) { foreach (var x in Items) f(x); }
-    internal override void Write(StringBuilder sb) { sb.Append('('); WriteList(sb, Items, forTuple: true); sb.Append(')'); }
+    private protected override void WriteCore(StringBuilder sb) { sb.Append('('); WriteList(sb, Items, forTuple: true); sb.Append(')'); }
 }
 
 public sealed class DotExpr(Expr target, AstString field, Span span) : Expr(span)
@@ -156,7 +163,7 @@ public sealed class DotExpr(Expr target, AstString field, Span span) : Expr(span
     public AstString Field { get; } = field;
     public override void VisitExpr(Action<Expr> f) => f(Target);
 
-    internal override void Write(StringBuilder sb)
+    private protected override void WriteCore(StringBuilder sb)
     {
         if (Target is IntLiteral)
         {
@@ -180,7 +187,7 @@ public sealed class CallExpr(Expr function, IReadOnlyList<Argument> args, Span s
         foreach (var a in Args) f(a.Value);
     }
 
-    internal override void Write(StringBuilder sb)
+    private protected override void WriteCore(StringBuilder sb)
     {
         Function.WritePostfixReceiver(sb);
         sb.Append('(');
@@ -198,7 +205,7 @@ public sealed class IndexExpr(Expr target, Expr index, Span span) : Expr(span)
     public Expr Target { get; } = target;
     public Expr Index { get; } = index;
     public override void VisitExpr(Action<Expr> f) { f(Target); f(Index); }
-    internal override void Write(StringBuilder sb) { Target.WritePostfixReceiver(sb); sb.Append('['); Index.Write(sb); sb.Append(']'); }
+    private protected override void WriteCore(StringBuilder sb) { Target.WritePostfixReceiver(sb); sb.Append('['); Index.Write(sb); sb.Append(']'); }
 }
 
 /// <summary><c>a[i, j]</c></summary>
@@ -209,7 +216,7 @@ public sealed class Index2Expr(Expr target, Expr first, Expr second, Span span) 
     public Expr Second { get; } = second;
     public override void VisitExpr(Action<Expr> f) { f(Target); f(First); f(Second); }
 
-    internal override void Write(StringBuilder sb)
+    private protected override void WriteCore(StringBuilder sb)
     {
         Target.WritePostfixReceiver(sb);
         sb.Append('['); First.Write(sb); sb.Append(", "); Second.Write(sb); sb.Append(']');
@@ -231,7 +238,7 @@ public sealed class SliceExpr(Expr target, Expr? start, Expr? stop, Expr? step, 
         if (Step is not null) f(Step);
     }
 
-    internal override void Write(StringBuilder sb)
+    private protected override void WriteCore(StringBuilder sb)
     {
         Target.WritePostfixReceiver(sb);
         sb.Append('[');
@@ -247,7 +254,7 @@ public sealed class IdentExpr(string name, Span span) : Expr(span)
 {
     public string Name { get; } = name;
     public override void VisitExpr(Action<Expr> f) { }
-    internal override void Write(StringBuilder sb) => sb.Append(Name);
+    private protected override void WriteCore(StringBuilder sb) => sb.Append(Name);
 }
 
 public sealed class LambdaExpr(IReadOnlyList<Parameter> parameters, Expr body, Span span) : Expr(span)
@@ -261,7 +268,7 @@ public sealed class LambdaExpr(IReadOnlyList<Parameter> parameters, Expr body, S
         f(Body);
     }
 
-    internal override void Write(StringBuilder sb)
+    private protected override void WriteCore(StringBuilder sb)
     {
         sb.Append("(lambda ");
         for (int i = 0; i < Parameters.Count; i++)
@@ -283,14 +290,14 @@ public abstract class LiteralExpr(Span span) : Expr(span)
 public sealed class IntLiteral(TokenInt value, Span span) : LiteralExpr(span)
 {
     public TokenInt Value { get; } = value;
-    internal override void Write(StringBuilder sb) => sb.Append(Value.ToString());
+    private protected override void WriteCore(StringBuilder sb) => sb.Append(Value.ToString());
 }
 
 public sealed class FloatLiteral(double value, Span span) : LiteralExpr(span)
 {
     public double Value { get; } = value;
 
-    internal override void Write(StringBuilder sb)
+    private protected override void WriteCore(StringBuilder sb)
     {
         if (double.IsInfinity(Value))
         {
@@ -306,14 +313,14 @@ public sealed class FloatLiteral(double value, Span span) : LiteralExpr(span)
 public sealed class StringLiteral(string value, Span span) : LiteralExpr(span)
 {
     public string Value { get; } = value;
-    internal override void Write(StringBuilder sb) => WriteStringLiteral(sb, Value);
+    private protected override void WriteCore(StringBuilder sb) => WriteStringLiteral(sb, Value);
 }
 
 public sealed class BytesLiteral(byte[] value, Span span) : LiteralExpr(span)
 {
     public byte[] Value { get; } = value;
 
-    internal override void Write(StringBuilder sb)
+    private protected override void WriteCore(StringBuilder sb)
     {
         sb.Append("b\"");
         foreach (byte b in Value)
@@ -335,35 +342,35 @@ public sealed class BytesLiteral(byte[] value, Span span) : LiteralExpr(span)
 
 public sealed class EllipsisLiteral(Span span) : LiteralExpr(span)
 {
-    internal override void Write(StringBuilder sb) => sb.Append("...");
+    private protected override void WriteCore(StringBuilder sb) => sb.Append("...");
 }
 
 public sealed class NotExpr(Expr operand, Span span) : Expr(span)
 {
     public Expr Operand { get; } = operand;
     public override void VisitExpr(Action<Expr> f) => f(Operand);
-    internal override void Write(StringBuilder sb) { sb.Append("(not "); Operand.Write(sb); sb.Append(')'); }
+    private protected override void WriteCore(StringBuilder sb) { sb.Append("(not "); Operand.Write(sb); sb.Append(')'); }
 }
 
 public sealed class MinusExpr(Expr operand, Span span) : Expr(span)
 {
     public Expr Operand { get; } = operand;
     public override void VisitExpr(Action<Expr> f) => f(Operand);
-    internal override void Write(StringBuilder sb) { sb.Append('-'); Operand.Write(sb); }
+    private protected override void WriteCore(StringBuilder sb) { sb.Append('-'); Operand.Write(sb); }
 }
 
 public sealed class PlusExpr(Expr operand, Span span) : Expr(span)
 {
     public Expr Operand { get; } = operand;
     public override void VisitExpr(Action<Expr> f) => f(Operand);
-    internal override void Write(StringBuilder sb) { sb.Append('+'); Operand.Write(sb); }
+    private protected override void WriteCore(StringBuilder sb) { sb.Append('+'); Operand.Write(sb); }
 }
 
 public sealed class BitNotExpr(Expr operand, Span span) : Expr(span)
 {
     public Expr Operand { get; } = operand;
     public override void VisitExpr(Action<Expr> f) => f(Operand);
-    internal override void Write(StringBuilder sb) { sb.Append('~'); Operand.Write(sb); }
+    private protected override void WriteCore(StringBuilder sb) { sb.Append('~'); Operand.Write(sb); }
 }
 
 public sealed class BinaryExpr(Expr left, BinOp op, Expr right, Span span) : Expr(span)
@@ -373,9 +380,41 @@ public sealed class BinaryExpr(Expr left, BinOp op, Expr right, Span span) : Exp
     public Expr Right { get; } = right;
     public override void VisitExpr(Action<Expr> f) { f(Left); f(Right); }
 
-    internal override void Write(StringBuilder sb)
+    private BinaryExpr[]? _leftChain;
+
+    /// <summary>
+    /// The chain of binary operators down the left side of this one, innermost first and ending with this node:
+    /// <c>1 + 2 + 3</c> is <c>(1 + 2) + 3</c>, whose chain is <c>[1 + 2, (1 + 2) + 3]</c>, and <c>LeftChain[0].Left</c> is the
+    /// first operand. The parser builds such chains with a loop, so they can be any length (a generated sum of thousands of
+    /// terms is ordinary); recursive walkers visit them with a loop over this list instead of recursing on <see cref="Left"/>.
+    /// Computed on first use and cached (the tree is immutable, so concurrent first uses compute the same list).
+    /// </summary>
+    public IReadOnlyList<BinaryExpr> LeftChain => _leftChain ??= BuildLeftChain();
+
+    private BinaryExpr[] BuildLeftChain()
     {
-        sb.Append('('); Left.Write(sb); sb.Append(Op.Padded()); Right.Write(sb); sb.Append(')');
+        int n = 1;
+        for (var e = Left; e is BinaryExpr b; e = b.Left) n++;
+        var chain = new BinaryExpr[n];
+        var node = this;
+        for (int i = n - 1; i >= 0; i--)
+        {
+            chain[i] = node;
+            if (node.Left is BinaryExpr inner) node = inner;
+        }
+        return chain;
+    }
+
+    private protected override void WriteCore(StringBuilder sb)
+    {
+        // `((a op b) op c)`, written with a loop over the chain so a long one cannot exhaust the stack.
+        var chain = LeftChain;
+        sb.Append('(', chain.Count);
+        chain[0].Left.Write(sb);
+        foreach (var node in chain)
+        {
+            sb.Append(node.Op.Padded()); node.Right.Write(sb); sb.Append(')');
+        }
     }
 }
 
@@ -387,7 +426,7 @@ public sealed class IfExpr(Expr condition, Expr ifTrue, Expr ifFalse, Span span)
     public Expr IfFalse { get; } = ifFalse;
     public override void VisitExpr(Action<Expr> f) { f(Condition); f(IfTrue); f(IfFalse); }
 
-    internal override void Write(StringBuilder sb)
+    private protected override void WriteCore(StringBuilder sb)
     {
         sb.Append('('); IfTrue.Write(sb); sb.Append(" if "); Condition.Write(sb); sb.Append(" else "); IfFalse.Write(sb); sb.Append(')');
     }
@@ -397,7 +436,7 @@ public sealed class ListExpr(IReadOnlyList<Expr> items, Span span) : Expr(span)
 {
     public IReadOnlyList<Expr> Items { get; } = items;
     public override void VisitExpr(Action<Expr> f) { foreach (var x in Items) f(x); }
-    internal override void Write(StringBuilder sb) { sb.Append('['); WriteList(sb, Items); sb.Append(']'); }
+    private protected override void WriteCore(StringBuilder sb) { sb.Append('['); WriteList(sb, Items); sb.Append(']'); }
 }
 
 public sealed class DictExpr(IReadOnlyList<(Expr Key, Expr Value)> entries, Span span) : Expr(span)
@@ -409,7 +448,7 @@ public sealed class DictExpr(IReadOnlyList<(Expr Key, Expr Value)> entries, Span
         foreach (var (k, v) in Entries) { f(k); f(v); }
     }
 
-    internal override void Write(StringBuilder sb)
+    private protected override void WriteCore(StringBuilder sb)
     {
         sb.Append('{');
         for (int i = 0; i < Entries.Count; i++)
@@ -434,7 +473,7 @@ public sealed class ListComprehension(Expr item, ForClause first, IReadOnlyList<
         f(Item);
     }
 
-    internal override void Write(StringBuilder sb)
+    private protected override void WriteCore(StringBuilder sb)
     {
         sb.Append('['); Item.Write(sb); First.Write(sb);
         foreach (var c in Rest) c.Write(sb);
@@ -457,7 +496,7 @@ public sealed class DictComprehension(Expr key, Expr value, ForClause first, IRe
         f(Value);
     }
 
-    internal override void Write(StringBuilder sb)
+    private protected override void WriteCore(StringBuilder sb)
     {
         sb.Append('{'); Key.Write(sb); sb.Append(": "); Value.Write(sb); First.Write(sb);
         foreach (var c in Rest) c.Write(sb);
@@ -472,7 +511,7 @@ public sealed class FStringExpr(string format, IReadOnlyList<Expr> expressions, 
     public IReadOnlyList<Expr> Expressions { get; } = expressions;
     public override void VisitExpr(Action<Expr> f) { foreach (var x in Expressions) f(x); }
 
-    internal override void Write(StringBuilder sb)
+    private protected override void WriteCore(StringBuilder sb)
     {
         WriteStringLiteral(sb, Format);
         sb.Append(".format(");
@@ -494,7 +533,9 @@ public abstract class Argument(Span span) : Node(span)
 {
     public abstract Expr Value { get; }
 
-    internal abstract void Write(StringBuilder sb);
+    internal void Write(StringBuilder sb) => WriteCore(sb);
+
+    private protected abstract void WriteCore(StringBuilder sb);
 
     public override string ToString()
     {
@@ -507,28 +548,28 @@ public abstract class Argument(Span span) : Node(span)
 public sealed class PositionalArgument(Expr value, Span span) : Argument(span)
 {
     public override Expr Value { get; } = value;
-    internal override void Write(StringBuilder sb) => Value.Write(sb);
+    private protected override void WriteCore(StringBuilder sb) => Value.Write(sb);
 }
 
 public sealed class NamedArgument(AstString name, Expr value, Span span) : Argument(span)
 {
     public AstString Name { get; } = name;
     public override Expr Value { get; } = value;
-    internal override void Write(StringBuilder sb) { sb.Append(Name.Value).Append(" = "); Value.Write(sb); }
+    private protected override void WriteCore(StringBuilder sb) { sb.Append(Name.Value).Append(" = "); Value.Write(sb); }
 }
 
 /// <summary><c>*args</c></summary>
 public sealed class StarArgument(Expr value, Span span) : Argument(span)
 {
     public override Expr Value { get; } = value;
-    internal override void Write(StringBuilder sb) { sb.Append('*'); Value.Write(sb); }
+    private protected override void WriteCore(StringBuilder sb) { sb.Append('*'); Value.Write(sb); }
 }
 
 /// <summary><c>**kwargs</c></summary>
 public sealed class StarStarArgument(Expr value, Span span) : Argument(span)
 {
     public override Expr Value { get; } = value;
-    internal override void Write(StringBuilder sb) { sb.Append("**"); Value.Write(sb); }
+    private protected override void WriteCore(StringBuilder sb) { sb.Append("**"); Value.Write(sb); }
 }
 
 /// <summary>An identifier in binding position.</summary>
@@ -591,7 +632,13 @@ public abstract class AssignTarget(Span span) : Node(span)
     /// <summary>Names bound by this target.</summary>
     public abstract void VisitLvalue(Action<AssignIdent> f);
 
-    internal abstract void Write(StringBuilder sb);
+    internal void Write(StringBuilder sb)
+    {
+        SyntaxLimits.EnsureStack();
+        WriteCore(sb);
+    }
+
+    private protected abstract void WriteCore(StringBuilder sb);
 
     public sealed override string ToString()
     {
@@ -607,7 +654,7 @@ public sealed class TupleTarget(IReadOnlyList<AssignTarget> items, Span span) : 
     public override void VisitExpr(Action<Expr> f) { foreach (var t in Items) t.VisitExpr(f); }
     public override void VisitLvalue(Action<AssignIdent> f) { foreach (var t in Items) t.VisitLvalue(f); }
 
-    internal override void Write(StringBuilder sb)
+    private protected override void WriteCore(StringBuilder sb)
     {
         sb.Append('(');
         for (int i = 0; i < Items.Count; i++)
@@ -626,7 +673,7 @@ public sealed class IndexTarget(Expr target, Expr index, Span span) : AssignTarg
     public Expr Index { get; } = index;
     public override void VisitExpr(Action<Expr> f) { f(Target); f(Index); }
     public override void VisitLvalue(Action<AssignIdent> f) { }
-    internal override void Write(StringBuilder sb) { Target.WritePostfixReceiver(sb); sb.Append('['); Index.Write(sb); sb.Append(']'); }
+    private protected override void WriteCore(StringBuilder sb) { Target.WritePostfixReceiver(sb); sb.Append('['); Index.Write(sb); sb.Append(']'); }
 }
 
 public sealed class DotTarget(Expr target, AstString field, Span span) : AssignTarget(span)
@@ -636,7 +683,7 @@ public sealed class DotTarget(Expr target, AstString field, Span span) : AssignT
     public override void VisitExpr(Action<Expr> f) => f(Target);
     public override void VisitLvalue(Action<AssignIdent> f) { }
 
-    internal override void Write(StringBuilder sb)
+    private protected override void WriteCore(StringBuilder sb)
     {
         if (Target is IntLiteral)
         {
@@ -654,7 +701,7 @@ public sealed class IdentTarget(AssignIdent ident, Span span) : AssignTarget(spa
     public AssignIdent Ident { get; } = ident;
     public override void VisitExpr(Action<Expr> f) { }
     public override void VisitLvalue(Action<AssignIdent> f) => f(Ident);
-    internal override void Write(StringBuilder sb) => sb.Append(Ident.Name);
+    private protected override void WriteCore(StringBuilder sb) => sb.Append(Ident.Name);
 }
 
 public sealed class ForClause(AssignTarget variable, Expr over)
@@ -674,21 +721,22 @@ public sealed class ForClause(AssignTarget variable, Expr over)
 public abstract class Clause
 {
     public abstract void VisitExpr(Action<Expr> f);
-    internal abstract void Write(StringBuilder sb);
+    internal void Write(StringBuilder sb) => WriteCore(sb);
+    private protected abstract void WriteCore(StringBuilder sb);
 }
 
 public sealed class ForClauseClause(ForClause clause) : Clause
 {
     public ForClause For { get; } = clause;
     public override void VisitExpr(Action<Expr> f) => For.VisitExpr(f);
-    internal override void Write(StringBuilder sb) => For.Write(sb);
+    private protected override void WriteCore(StringBuilder sb) => For.Write(sb);
 }
 
 public sealed class IfClause(Expr condition) : Clause
 {
     public Expr Condition { get; } = condition;
     public override void VisitExpr(Action<Expr> f) => f(Condition);
-    internal override void Write(StringBuilder sb) { sb.Append(" if "); Condition.Write(sb); }
+    private protected override void WriteCore(StringBuilder sb) { sb.Append(" if "); Condition.Write(sb); }
 }
 
 // ======================================================================== statements
@@ -702,6 +750,7 @@ public abstract class Stmt(Span span) : Node(span)
     /// without descending into expression children.</summary>
     public void VisitExpr(Action<Expr> f)
     {
+        SyntaxLimits.EnsureStack();
         VisitOwnExprs(f);
         VisitStmt(s => s.VisitExpr(f));
     }
@@ -709,7 +758,14 @@ public abstract class Stmt(Span span) : Node(span)
     /// <summary>Expressions owned directly by this statement (not by nested statements).</summary>
     public abstract void VisitOwnExprs(Action<Expr> f);
 
-    internal abstract void Write(StringBuilder sb, string tab);
+    /// <summary>Writes the statement as source text, indented by <paramref name="tab"/>; the stack is checked first.</summary>
+    internal void Write(StringBuilder sb, string tab)
+    {
+        SyntaxLimits.EnsureStack();
+        WriteCore(sb, tab);
+    }
+
+    private protected abstract void WriteCore(StringBuilder sb, string tab);
 
     public sealed override string ToString()
     {
@@ -723,21 +779,21 @@ public sealed class BreakStmt(Span span) : Stmt(span)
 {
     public override void VisitStmt(Action<Stmt> f) { }
     public override void VisitOwnExprs(Action<Expr> f) { }
-    internal override void Write(StringBuilder sb, string tab) => sb.Append(tab).Append("break\n");
+    private protected override void WriteCore(StringBuilder sb, string tab) => sb.Append(tab).Append("break\n");
 }
 
 public sealed class ContinueStmt(Span span) : Stmt(span)
 {
     public override void VisitStmt(Action<Stmt> f) { }
     public override void VisitOwnExprs(Action<Expr> f) { }
-    internal override void Write(StringBuilder sb, string tab) => sb.Append(tab).Append("continue\n");
+    private protected override void WriteCore(StringBuilder sb, string tab) => sb.Append(tab).Append("continue\n");
 }
 
 public sealed class PassStmt(Span span) : Stmt(span)
 {
     public override void VisitStmt(Action<Stmt> f) { }
     public override void VisitOwnExprs(Action<Expr> f) { }
-    internal override void Write(StringBuilder sb, string tab) => sb.Append(tab).Append("pass\n");
+    private protected override void WriteCore(StringBuilder sb, string tab) => sb.Append(tab).Append("pass\n");
 }
 
 public sealed class ReturnStmt(Expr? value, Span span) : Stmt(span)
@@ -746,7 +802,7 @@ public sealed class ReturnStmt(Expr? value, Span span) : Stmt(span)
     public override void VisitStmt(Action<Stmt> f) { }
     public override void VisitOwnExprs(Action<Expr> f) { if (Value is not null) f(Value); }
 
-    internal override void Write(StringBuilder sb, string tab)
+    private protected override void WriteCore(StringBuilder sb, string tab)
     {
         sb.Append(tab).Append("return");
         if (Value is not null) { sb.Append(' '); Value.Write(sb); }
@@ -759,7 +815,7 @@ public sealed class ExpressionStmt(Expr expr, Span span) : Stmt(span)
     public Expr Expr { get; } = expr;
     public override void VisitStmt(Action<Stmt> f) { }
     public override void VisitOwnExprs(Action<Expr> f) => f(Expr);
-    internal override void Write(StringBuilder sb, string tab) { sb.Append(tab); Expr.Write(sb); sb.Append('\n'); }
+    private protected override void WriteCore(StringBuilder sb, string tab) { sb.Append(tab); Expr.Write(sb); sb.Append('\n'); }
 }
 
 /// <summary><c>x: t = y</c></summary>
@@ -777,7 +833,7 @@ public sealed class AssignStmt(AssignTarget target, TypeExpr? type, Expr value, 
         f(Value);
     }
 
-    internal override void Write(StringBuilder sb, string tab)
+    private protected override void WriteCore(StringBuilder sb, string tab)
     {
         sb.Append(tab); Target.Write(sb); sb.Append(' ');
         if (Type is not null) sb.Append(": ").Append(Type).Append(' ');
@@ -794,7 +850,7 @@ public sealed class AssignModifyStmt(AssignTarget target, AssignOp op, Expr valu
     public override void VisitStmt(Action<Stmt> f) { }
     public override void VisitOwnExprs(Action<Expr> f) { Target.VisitExpr(f); f(Value); }
 
-    internal override void Write(StringBuilder sb, string tab)
+    private protected override void WriteCore(StringBuilder sb, string tab)
     {
         sb.Append(tab); Target.Write(sb); sb.Append(Op.Padded()); Value.Write(sb); sb.Append('\n');
     }
@@ -805,7 +861,7 @@ public sealed class StatementsStmt(IReadOnlyList<Stmt> statements, Span span) : 
     public IReadOnlyList<Stmt> Statements { get; } = statements;
     public override void VisitStmt(Action<Stmt> f) { foreach (var s in Statements) f(s); }
     public override void VisitOwnExprs(Action<Expr> f) { }
-    internal override void Write(StringBuilder sb, string tab) { foreach (var s in Statements) s.Write(sb, tab); }
+    private protected override void WriteCore(StringBuilder sb, string tab) { foreach (var s in Statements) s.Write(sb, tab); }
 }
 
 public sealed class IfStmt(Expr condition, Stmt then, Stmt? otherwise, Span span) : Stmt(span)
@@ -819,7 +875,7 @@ public sealed class IfStmt(Expr condition, Stmt then, Stmt? otherwise, Span span
     public override void VisitStmt(Action<Stmt> f) { f(Then); if (Else is not null) f(Else); }
     public override void VisitOwnExprs(Action<Expr> f) => f(Condition);
 
-    internal override void Write(StringBuilder sb, string tab)
+    private protected override void WriteCore(StringBuilder sb, string tab)
     {
         sb.Append(tab).Append("if "); Condition.Write(sb); sb.Append(":\n");
         Then.Write(sb, tab + "  ");
@@ -839,7 +895,7 @@ public sealed class ForStmt(AssignTarget variable, Expr over, Stmt body, Span sp
     public override void VisitStmt(Action<Stmt> f) => f(Body);
     public override void VisitOwnExprs(Action<Expr> f) { Variable.VisitExpr(f); f(Over); }
 
-    internal override void Write(StringBuilder sb, string tab)
+    private protected override void WriteCore(StringBuilder sb, string tab)
     {
         sb.Append(tab).Append("for "); Variable.Write(sb); sb.Append(" in "); Over.Write(sb); sb.Append(":\n");
         Body.Write(sb, tab + "  ");
@@ -871,7 +927,7 @@ public sealed class DefStmt(AssignIdent name, IReadOnlyList<Parameter> parameter
         }
     }
 
-    internal override void Write(StringBuilder sb, string tab)
+    private protected override void WriteCore(StringBuilder sb, string tab)
     {
         sb.Append(tab).Append("def ").Append(Name.Name).Append('(');
         for (int i = 0; i < Parameters.Count; i++)
@@ -906,7 +962,7 @@ public sealed class LoadStmt(AstString module, IReadOnlyList<LoadArg> args, Span
     public override void VisitStmt(Action<Stmt> f) { }
     public override void VisitOwnExprs(Action<Expr> f) { }
 
-    internal override void Write(StringBuilder sb, string tab)
+    private protected override void WriteCore(StringBuilder sb, string tab)
     {
         sb.Append(tab).Append("load(");
         Expr.WriteStringLiteral(sb, Module.Value);
