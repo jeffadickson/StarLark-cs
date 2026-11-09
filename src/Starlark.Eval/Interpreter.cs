@@ -531,11 +531,16 @@ public sealed class Interpreter
     /// file. Names imported with <c>load()</c> are typed <c>typing.Any</c>. A module the loader cannot supply is left
     /// for <see cref="Execute(AstModule)"/> to report.
     /// </summary>
-    public TypeCheck.TypeCheckResult Typecheck(AstModule ast) => TypecheckWithLoads(ast, []);
+    /// <remarks>
+    /// The check obeys <see cref="Timeout"/> and <see cref="Cancellation"/> as a run does, with the same exceptions; when it
+    /// is part of <see cref="Execute(AstModule)"/> (<see cref="TypecheckBeforeExecute"/>), the check and the run each get the
+    /// full timeout.
+    /// </remarks>
+    public TypeCheck.TypeCheckResult Typecheck(AstModule ast) => TypecheckWithLoads(ast, [], TypeCheck.CheckBudget.For(this));
 
-    private TypeCheck.TypeCheckResult TypecheckWithLoads(AstModule ast, HashSet<string> seen)
+    private TypeCheck.TypeCheckResult TypecheckWithLoads(AstModule ast, HashSet<string> seen, TypeCheck.CheckBudget budget)
     {
-        var result = TypeCheck.TypeChecker.Check(ast, _universe.ContainsKey, _hostTypes, _hostFunctions);
+        var result = TypeCheck.TypeChecker.Check(ast, _universe.ContainsKey, _hostTypes, _hostFunctions, budget);
         var errors = result.Errors.ToList();
         var approximations = result.Approximations.ToList();
         var loads = new List<string>();
@@ -549,7 +554,7 @@ public sealed class Interpreter
         foreach (var id in loads)
         {
             if (!seen.Add(id) || (SourceLoader?.Invoke(id) ?? StandardLibrary.Read(id)) is not { } source) continue;
-            var loaded = TypecheckWithLoads(AstModule.Parse(id, source, Dialect), seen);
+            var loaded = TypecheckWithLoads(AstModule.Parse(id, source, Dialect), seen, budget);
             errors.AddRange(loaded.Errors);
             approximations.AddRange(loaded.Approximations);
         }
@@ -602,11 +607,23 @@ public sealed class Interpreter
     /// <exception cref="StarlarkSyntaxException">The text does not parse, or is not a single expression.</exception>
     public object? Eval(string expression) => OnScriptStack(() => EvalHere(expression));
 
+    // An empty tuple that parsed from the text is the text's own when the text has a '(' before any comment; otherwise it is
+    // the wrapper's, and there was no expression. (A '(' inside a string literal cannot leave the value an empty tuple.)
+    private static bool HasOwnTuple(string expression)
+    {
+        int hash = expression.IndexOf('#');
+        int paren = expression.IndexOf('(');
+        return paren >= 0 && (hash < 0 || paren < hash);
+    }
+
     private object? EvalHere(string expression)
     {
+        ArgumentNullException.ThrowIfNull(expression);
         var ast = AstModule.Parse("<eval>", "_ = (" + expression + "\n)", Dialect);
         // Text that closes the wrapper's parenthesis can smuggle in statements; only one plain expression is accepted.
-        if (ast.Statement is not AssignStmt { Target: IdentTarget { Ident.Name: "_" }, Type: null } assign)
+        // Text with no expression at all ("", blanks, a comment) would parse as the wrapper's own empty tuple.
+        if (ast.Statement is not AssignStmt { Target: IdentTarget { Ident.Name: "_" }, Type: null } assign ||
+            (assign.Value is TupleExpr { Items.Count: 0 } && !HasOwnTuple(expression)))
         {
             throw new StarlarkSyntaxException("Eval expects a single expression", ast.Statement.Span, ast.CodeMap);
         }
@@ -748,33 +765,41 @@ public sealed class Interpreter
         {
             return cached ?? throw new StarlarkException($"Cycle in load graph: module `{id}` is being loaded");
         }
+        // Each level of a load chain holds several interpreter frames, so a long chain is refused before the stack runs out.
+        if (_loadDepth >= MaxLoadDepth || !RuntimeHelpers.TryEnsureSufficientExecutionStack())
+        {
+            throw new StarlarkException($"load() nesting exceeds {MaxLoadDepth} modules or the thread's stack (module `{id}`)");
+        }
         string src = SourceLoader?.Invoke(id) ?? StandardLibrary.Read(id) ?? throw new StarlarkException($"Cannot load module `{id}`");
         _moduleCache[id] = null; // mark as in progress, to detect cycles
+        var ctx = Ctx;
+        var saved = (ctx.Depth, Active: ctx.Active.ToArray());
+        ctx.Depth = 0;
+        ctx.Active.Clear();
+        _loadDepth++;
+        bool ok = false;
+        // A success flag instead of catch-and-rethrow: a rethrow at every level would run its handler on top of the deep stack.
         try
         {
-            var ctx = Ctx;
-            var saved = (ctx.Depth, Active: ctx.Active.ToArray());
-            ctx.Depth = 0;
-            ctx.Active.Clear();
-            try
-            {
-                var m = Execute(id, src);
-                _moduleCache[id] = m;
-                return m;
-            }
-            finally
-            {
-                ctx.Depth = saved.Depth;
-                ctx.Active.Clear();
-                foreach (var x in saved.Active) ctx.Active.Add(x);
-            }
+            var m = Execute(id, src);
+            _moduleCache[id] = m;
+            ok = true;
+            return m;
         }
-        catch
+        finally
         {
-            _moduleCache.Remove(id);
-            throw;
+            _loadDepth--;
+            if (!ok) _moduleCache.Remove(id);
+            ctx.Depth = saved.Depth;
+            ctx.Active.Clear();
+            foreach (var x in saved.Active) ctx.Active.Add(x);
         }
     }
+
+    /// <summary>The longest chain of modules loading modules that one run may have.</summary>
+    public const int MaxLoadDepth = 200;
+
+    private int _loadDepth;
 
     // ------------------------------------------------------------------ assignment
 

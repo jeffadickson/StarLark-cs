@@ -8,7 +8,9 @@ namespace Starlark.Eval;
 /// </summary>
 public sealed class TypeValue(Ty ty) : ICallable
 {
-    public Ty Ty { get; } = ty;
+    // Every type a script builds at runtime (list[t], t | u, tuple[...]) becomes a TypeValue, so one check here keeps a loop
+    // such as `t = list[t]` from building a type too deep to print, compare or match.
+    public Ty Ty { get; } = Ty.CheckRuntime(ty);
     public string Name => Ty.ToString();
     public string TypeName => "type";
 
@@ -42,7 +44,8 @@ public static class TypeEval
             case string s:
                 throw new StarlarkException($"String literals are not allowed in type expressions: `{s}`");
             case StarTuple t:
-                return new Ty.TupleTy(t.Items.Select(ToTy).ToList());
+                StackGuard.Check();
+                return Ty.CheckRuntime(new Ty.TupleTy(t.Items.Select(ToTy).ToList()));
         }
         throw new StarlarkException($"Type `{Repr.Of(v)}` is not a valid type annotation");
     }

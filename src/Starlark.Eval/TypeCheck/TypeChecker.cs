@@ -4,6 +4,19 @@ using Starlark.Syntax;
 
 namespace Starlark.Eval.TypeCheck;
 
+/// <summary>
+/// The time and cancellation budget of a type check started by an <see cref="Interpreter"/>: the same
+/// <see cref="Interpreter.Timeout"/> and <see cref="Interpreter.Cancellation"/> that bound execution, failing with the same
+/// exceptions. The default value has no limit.
+/// </summary>
+internal readonly struct CheckBudget(CancellationToken token, long deadlineTicks, TimeSpan? timeout)
+{
+    public static CheckBudget For(Interpreter it) =>
+        new(it.Cancellation, it.Timeout is { } t ? ExecutionContext.DeadlineAfter(t) : 0, it.Timeout);
+
+    public void Poll() => ExecutionContext.PollNow(token, deadlineTicks, timeout);
+}
+
 /// <summary>One static type error, with the source it came from.</summary>
 public sealed record TypeDiagnostic(string Message, Span Span, CodeMap CodeMap)
 {
@@ -40,6 +53,32 @@ public sealed class TypeChecker
     private readonly List<TypeDiagnostic> _errors = [];
     private readonly List<string> _approximations = [];
     private readonly Dictionary<string, Ty> _recorded = [];
+
+    /// <summary>The deadline and cancellation of the check, polled every 1024 statements and expressions.</summary>
+    private CheckBudget _budget;
+    private int _ticks;
+
+    /// <summary>Types inferred deeper than this are widened to <c>typing.Any</c>.</summary>
+    internal const int MaxInferredDepth = 16;
+
+    /// <summary>Types inferred larger than this, in nodes, are widened to <c>typing.Any</c>.</summary>
+    internal const int MaxInferredSize = 4096;
+
+    /// <summary>Unions inferred with more options than this are widened to <c>typing.Any</c>.</summary>
+    internal const int MaxInferredOptions = 32;
+
+    /// <summary>
+    /// Keeps inferred types small. A program such as <c>x = [x]</c> repeated, or <c>y = (y, y)</c>, would otherwise build
+    /// types that grow with every line (or double), and comparing them would make checking cubic or exponential. Widening
+    /// to <c>typing.Any</c> can never cause a false error, because <c>typing.Any</c> intersects every type.
+    /// </summary>
+    private static Ty Widen(Ty t) =>
+        t.Depth > MaxInferredDepth || t.Size > MaxInferredSize || t is Ty.UnionTy { Options.Count: > MaxInferredOptions } ? Ty.Any : t;
+
+    private void Tick()
+    {
+        if ((++_ticks & 1023) == 0) _budget.Poll();
+    }
 
     private sealed class Scope(Scope? parent)
     {
@@ -78,9 +117,15 @@ public sealed class TypeChecker
     /// <paramref name="predeclaredTypes"/> gives their types where known (others are <c>typing.Any</c>).
     /// </summary>
     public static TypeCheckResult Check(AstModule ast, Func<string, bool>? isPredeclared = null,
-        IReadOnlyDictionary<string, Ty>? predeclaredTypes = null, IReadOnlyDictionary<string, Signature>? hostFunctions = null)
+        IReadOnlyDictionary<string, Ty>? predeclaredTypes = null, IReadOnlyDictionary<string, Signature>? hostFunctions = null) =>
+        Check(ast, isPredeclared, predeclaredTypes, hostFunctions, default);
+
+    /// <summary>The same, stopping with the execution limit exceptions when <paramref name="budget"/> runs out.</summary>
+    internal static TypeCheckResult Check(AstModule ast, Func<string, bool>? isPredeclared,
+        IReadOnlyDictionary<string, Ty>? predeclaredTypes, IReadOnlyDictionary<string, Signature>? hostFunctions, CheckBudget budget)
     {
         var c = new TypeChecker(ast.CodeMap, isPredeclared ?? (_ => false), predeclaredTypes ?? new Dictionary<string, Ty>());
+        c._budget = budget;
         if (hostFunctions is not null) c._hostFunctions = hostFunctions;
         var module = new Scope(null);
         // Types first (a function may annotate with a record defined further down), then signatures.
@@ -371,7 +416,7 @@ public sealed class TypeChecker
 
     private void Bind(Scope scope, string name, Ty ty)
     {
-        scope.Vars[name] = scope.Vars.TryGetValue(name, out var old) ? Ty.Union([old, ty]) : ty;
+        scope.Vars[name] = Widen(scope.Vars.TryGetValue(name, out var old) ? Ty.Union([old, Widen(ty)]) : ty);
         _recorded[name] = scope.Vars[name];
     }
 
@@ -379,6 +424,7 @@ public sealed class TypeChecker
     private void Stmt(Stmt stmt, Scope scope)
     {
         StackGuard.CheckSyntax();
+        Tick();
         switch (stmt)
         {
             case StatementsStmt s:
@@ -549,10 +595,14 @@ public sealed class TypeChecker
 
     // ---------------------------------------------------------------- expressions
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private Ty Infer(Expr e, Scope scope) => Widen(InferNode(e, scope));
+
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]   // on the stack once per level of nesting: see InferTuple
-    private Ty Infer(Expr e, Scope scope)
+    private Ty InferNode(Expr e, Scope scope)
     {
         StackGuard.CheckSyntax();
+        Tick();
         switch (e)
         {
             case IntLiteral: return Ty.Int;

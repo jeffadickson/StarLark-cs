@@ -255,12 +255,15 @@ internal sealed class ExecutionContext
     }
 
     /// <summary>Checks cancellation and the deadline now.</summary>
-    public void PollNow()
+    public void PollNow() => PollNow(Token, DeadlineTicks, Interpreter.Timeout);
+
+    /// <summary>The check behind <see cref="PollNow()"/>, shared with the type checker so both fail the same way.</summary>
+    internal static void PollNow(CancellationToken token, long deadlineTicks, TimeSpan? timeout)
     {
-        Token.ThrowIfCancellationRequested();
-        if (DeadlineTicks != 0 && System.Diagnostics.Stopwatch.GetTimestamp() > DeadlineTicks)
+        token.ThrowIfCancellationRequested();
+        if (deadlineTicks != 0 && System.Diagnostics.Stopwatch.GetTimestamp() > deadlineTicks)
         {
-            throw new ExecutionLimitException("time", $"Script exceeded the time limit of {Interpreter.Timeout}");
+            throw new ExecutionLimitException("time", $"Script exceeded the time limit of {timeout}");
         }
     }
 
