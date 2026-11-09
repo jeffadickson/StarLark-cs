@@ -70,8 +70,8 @@ public static class Builtins
             }
         });
 
-        Add(u, "all", (_, a) => Ops.Iterate(a.Required("x")).All(Types.Truthy));
-        Add(u, "any", (_, a) => Ops.Iterate(a.Required("x")).Any(Types.Truthy));
+        Add(u, "all", (_, a) => Ops.IterateStepped(a.Required("x")).All(Types.Truthy));
+        Add(u, "any", (_, a) => Ops.IterateStepped(a.Required("x")).Any(Types.Truthy));
         Add(u, "bool", (_, a) => Types.Truthy(a.Optional("x", false)));
 
         Add(u, "bytes", (_, a) => a.Required("x") switch
@@ -80,7 +80,7 @@ public static class Builtins
             string s => new StarBytes(Encoding.UTF8.GetBytes(s)),
             StarUtf16 u16 => new StarBytes(Encoding.UTF8.GetBytes(u16.Value)),
             var v when v is StarList or StarTuple or StarRange or StarSet or StarElems or StarDict =>
-                new StarBytes(Ops.Iterate(v).Select(ByteOf).ToArray()),
+                new StarBytes(BytesOf(v)),
             var v => throw new StarlarkException(
                 $"got {Types.Name(v)}, want string, bytes, or iterable of int"),
         });
@@ -111,7 +111,7 @@ public static class Builtins
             {
                 if (kv.Key == "sep") sep = kv.Value as string ?? throw Err.Param("sep", "string", kv.Value);
             }
-            throw new StarlarkException("fail: " + string.Join(sep, a.Select(Repr.Str)));
+            throw new StarlarkException("fail: " + JoinChecked(sep, a.Select(Repr.Str).ToList(), "fail: ".Length));
         });
 
         Add(u, "float", (_, a) => ToFloat(a.Optional("x", 0.0)));
@@ -156,7 +156,7 @@ public static class Builtins
                 if (kv.Key == "sep") sep = kv.Value as string ?? throw Err.Param("sep", "string", kv.Value);
                 else throw new StarlarkException($"Unexpected parameter named `{kv.Key}` for call to `print`");
             }
-            var line = string.Join(sep, a.Select(Repr.Str));
+            var line = JoinChecked(sep, a.Select(Repr.Str).ToList());
             // A task's output is held back and printed by whoever collects it, so output order does not depend on scheduling.
             if (ExecutionContext.Current is { Output: { } buffered } task)
             {
@@ -170,7 +170,14 @@ public static class Builtins
                 task.OutputBytes += bytes;
                 buffered.Add(line);
             }
-            else it.Print(line);
+            else
+            {
+                try { it.Print(line); }
+                catch (Exception e) when (e is not (StarlarkException or ExecutionLimitException or OperationCanceledException))
+                {
+                    throw new StarlarkException($"print: the output sink failed: {e.Message}", e);
+                }
+            }
             return null;
         });
 
@@ -284,6 +291,26 @@ public static class Builtins
             if (a.Count > 0) throw new StarlarkException("struct() takes only named arguments");
             return new StarStruct(k);
         });
+    }
+
+    /// <summary>
+    /// <c>bytes(iterable)</c>: a known length is checked against the ceilings before anything is built, and every element
+    /// is a step, so a huge range or list is refused or stopped by the limits.
+    /// </summary>
+    private static byte[] BytesOf(object v)
+    {
+        if (Ops.KnownLength(v) is { } n)
+        {
+            if (n >= Ops.MaxRepeatElements) throw new StarlarkException($"bytes: cannot build {n} bytes");
+            MemoryBudget.Check((long)n);
+        }
+        var result = new List<byte>();
+        foreach (var x in Ops.IterateStepped(v))
+        {
+            if (result.Count >= Ops.MaxRepeatElements - 1) throw new StarlarkException("bytes: too many elements");
+            result.Add(ByteOf(x));
+        }
+        return [.. result];
     }
 
     private static byte ByteOf(object? x)
@@ -511,10 +538,28 @@ public static class Builtins
             // OrderBy is a stable sort, so equal elements keep their original order (also for reverse=True).
             return idx.OrderBy(i => i, cmp).Select(i => items[i]).ToList();
         }
-        catch (InvalidOperationException e) when (e.InnerException is StarlarkException inner)
+        catch (InvalidOperationException e) when (e.InnerException is StarlarkException or ExecutionLimitException or OperationCanceledException)
         {
-            throw inner;
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e.InnerException!).Throw();
+            throw;   // unreachable
         }
+        catch (InvalidOperationException e) when (e.InnerException is { } inner)
+        {
+            // A host value's CompareTo threw something else: host code failing, reported as such.
+            throw new StarlarkException($"Comparison failed in sorted: {inner.Message}", inner);
+        }
+    }
+
+    /// <summary>
+    /// <c>string.Join</c> for messages built from script values (<c>print</c>, <c>fail</c>), checked against the string ceiling
+    /// and the memory budget before anything is built. <paramref name="extra"/> counts chars the caller adds.
+    /// </summary>
+    internal static string JoinChecked(string sep, List<string> parts, long extra = 0)
+    {
+        long total = extra + (parts.Count > 1 ? (long)sep.Length * (parts.Count - 1) : 0);
+        foreach (var p in parts) total += p.Length;
+        MemoryBudget.CheckString(total);
+        return string.Join(sep, parts);
     }
 
     private static object? MinMax(Interpreter it, string name, Args a, Kwargs k, int sign)

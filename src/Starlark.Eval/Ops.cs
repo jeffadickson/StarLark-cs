@@ -134,7 +134,7 @@ public static class Ops
             case (StarUtf16 x, StarUtf16 y): return x.Equals(y);
             case (StarBytes x, StarBytes y): return x.Equals(y);
             case (StarList x, StarList y): return ReferenceEquals(x, y) || SeqEqual(x.Items, y.Items);
-            case (StarTuple x, StarTuple y): return SeqEqual(x.Items, y.Items);
+            case (StarTuple x, StarTuple y): return ReferenceEquals(x, y) || SeqEqual(x.Items, y.Items);
             case (StarDict x, StarDict y):
                 if (ReferenceEquals(x, y)) return true;
                 if (x.Count != y.Count) return false;
@@ -164,7 +164,7 @@ public static class Ops
 
     private static bool SeqEqual(IReadOnlyList<object?> a, IReadOnlyList<object?> b)
     {
-        StackGuard.Check();
+        StackGuard.CheckNode();
         if (a.Count != b.Count) return false;
         for (int i = 0; i < a.Count; i++)
         {
@@ -353,14 +353,24 @@ public static class Ops
         switch (a, b)
         {
             case (BigInteger x, BigInteger y): return CheckedInt(x + y, "addition");
-            case (string x, string y): MemoryBudget.CheckElements((long)x.Length + y.Length, 2); return x + y;
-            case (StarUtf16 x, StarUtf16 y): return new StarUtf16(x.Value + y.Value);
-            case (StarBytes x, StarBytes y): return new StarBytes([.. x.Value, .. y.Value]);
-            case (StarList x, StarList y): MemoryBudget.CheckElements((long)x.Count + y.Count, 8); return new StarList(x.Items.Concat(y.Items));
-            case (StarTuple x, StarTuple y): return new StarTuple([.. x.Items, .. y.Items]);
+            case (string x, string y): MemoryBudget.CheckString((long)x.Length + y.Length); return x + y;
+            case (StarUtf16 x, StarUtf16 y): MemoryBudget.CheckString((long)x.Value.Length + y.Value.Length); return new StarUtf16(x.Value + y.Value);
+            case (StarBytes x, StarBytes y): CheckConcat((long)x.Value.Length + y.Value.Length, 1); return new StarBytes([.. x.Value, .. y.Value]);
+            case (StarList x, StarList y): CheckConcat((long)x.Count + y.Count, 8); return new StarList(x.Items.Concat(y.Items));
+            case (StarTuple x, StarTuple y): CheckConcat((long)x.Items.Length + y.Items.Length, 8); return new StarTuple([.. x.Items, .. y.Items]);
         }
         if (IsNum(a) && IsNum(b)) return ToDouble(a) + ToDouble(b);
         throw Err.Unsupported("+", a, b);
+    }
+
+    /// <summary>
+    /// The size checks for a concatenation of <paramref name="n"/> elements of <paramref name="elementBytes"/> each: the
+    /// repetition ceiling (<see cref="MaxRepeatElements"/>) and the memory budget, so <c>+</c> is bounded as <c>*</c> is.
+    /// </summary>
+    internal static void CheckConcat(long n, int elementBytes)
+    {
+        if (n >= MaxRepeatElements) throw new StarlarkException($"Excessive concatenation: the result would have {n} elements");
+        MemoryBudget.CheckElements(n, elementBytes);
     }
 
     public static object? Subtract(object? a, object? b)
@@ -566,6 +576,20 @@ public static class Ops
         throw Err.NotIterable(v);
     }
 
+    /// <summary>
+    /// <see cref="Iterate"/> for a builtin that walks a whole iterable in one call (<c>all</c>, <c>any</c>, <c>join</c>,
+    /// <c>bytes</c>): every element counts as a step, so step limits, the deadline and cancellation stop it.
+    /// </summary>
+    internal static IEnumerable<object?> IterateStepped(object? v)
+    {
+        var ctx = ExecutionContext.Current;
+        foreach (var x in Iterate(v))
+        {
+            ctx?.Step();
+            yield return x;
+        }
+    }
+
     /// <summary>The most elements one operation may expand an iterable into (the same ceiling repetition uses).</summary>
     public const int MaxMaterialized = 100_000_000;
 
@@ -670,7 +694,7 @@ public static class Ops
         if (target is StarDict d)
         {
             if (d.TryGet(index, out var v)) return v;
-            throw new StarlarkException($"Key `{Repr.Of(index)}` not found in dictionary");
+            throw new StarlarkException($"Key `{Methods.Clip(Repr.Of(index))}` not found in dictionary");
         }
         if (target is StarEnumType et)
         {

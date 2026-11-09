@@ -20,6 +20,17 @@ internal static class StackGuard
         }
     }
 
+    /// <summary>
+    /// <see cref="Check"/> for a walker over script values that visits one container: also counts a step, so a walk over a
+    /// value that shares its parts (<c>t = (t, t)</c> sixty times is small, but has 2^60 paths) is stopped by the step
+    /// limit, the deadline and cancellation instead of running inside one step forever.
+    /// </summary>
+    public static void CheckNode()
+    {
+        Check();
+        ExecutionContext.Current?.Step();
+    }
+
     /// <summary>The same check for walkers over a syntax tree, whose failure is about the program text rather than a value.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CheckSyntax()

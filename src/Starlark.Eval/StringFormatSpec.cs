@@ -71,6 +71,7 @@ public static partial class StringFormat
     {
         int len = CharCount(sign) + CharCount(body);
         if (width is not { } w || len >= w) return sign + body;
+        MemoryBudget.CheckString((long)w * Math.Max(1, fill.Length) + sign.Length + body.Length);
         int gap = w - len;
         if (align == '=')
         {
@@ -276,10 +277,16 @@ public static partial class StringFormat
 
     private static string FloatBody(double abs, char type, int? prec, bool alt)
     {
+        // A fixed-point body is up to 309 integer digits plus the precision: check it before formatting.
+        if (prec is { } pr) MemoryBudget.CheckString(pr + 400L);
         switch (type)
         {
             case 'f': case 'F': return abs.ToString("F" + (prec ?? 6), Inv);
-            case '%': return (abs * 100).ToString("F" + (prec ?? 6), Inv) + "%";
+            case '%':
+            {
+                double scaled = abs * 100;   // overflows to infinity for |x| near the largest double
+                return (double.IsInfinity(scaled) ? "inf" : scaled.ToString("F" + (prec ?? 6), Inv)) + "%";
+            }
             case 'e': case 'E':
                 return Scientific(abs, prec ?? 6, trim: false);
             case 'g': case 'G':

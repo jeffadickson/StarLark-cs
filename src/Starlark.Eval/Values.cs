@@ -20,6 +20,9 @@ public sealed class StarlarkException : Exception
 
     public StarlarkException(string message) : base(message) => RawMessage = message;
 
+    /// <summary>An error caused by a host exception, kept as <see cref="Exception.InnerException"/> for the host's diagnosis.</summary>
+    public StarlarkException(string message, Exception inner) : base(message, inner) => RawMessage = message;
+
     public override string Message =>
         Span is { } s && CodeMap is { } cm ? SnippetRenderer.Render(RawMessage, cm, s) : RawMessage;
 
@@ -341,9 +344,22 @@ public sealed class StarList : Mutable
         }
     }
 
-    public void Add(object? x) { CheckMutable("list"); _items.Add(x); }
-    public void AddRange(IEnumerable<object?> xs) { var l = xs.ToList(); CheckMutable("list"); _items.AddRange(l); }
-    public void Insert(int i, object? x) { CheckMutable("list"); _items.Insert(i, x); }
+    public void Add(object? x) { CheckMutable("list"); CheckGrow(1); _items.Add(x); }
+    public void AddRange(IEnumerable<object?> xs) { var l = xs.ToList(); CheckMutable("list"); CheckGrow(l.Count); _items.AddRange(l); }
+    public void Insert(int i, object? x) { CheckMutable("list"); CheckGrow(1); _items.Insert(i, x); }
+
+    /// <summary>
+    /// A list grown by <c>append</c>, <c>extend</c>, <c>insert</c> or <c>+=</c> is held to the same ceilings as one built in
+    /// one step: <see cref="Ops.MaxMaterialized"/> elements and the memory budget. Checked only when the backing array
+    /// would have to grow, so appending stays cheap.
+    /// </summary>
+    private void CheckGrow(long n)
+    {
+        long total = _items.Count + n;
+        if (total <= _items.Capacity) return;
+        if (total > Ops.MaxMaterialized) throw new StarlarkException($"List would have {total} elements: the limit is {Ops.MaxMaterialized}");
+        MemoryBudget.CheckElements(total, 8);
+    }
     public void RemoveAt(int i) { CheckMutable("list"); _items.RemoveAt(i); }
     public void Clear() { CheckMutable("list"); _items.Clear(); }
     public void Set(int i, object? x) { CheckMutable("list"); _items[i] = x; }
@@ -461,7 +477,11 @@ public sealed class StarSet : Mutable
 
 public static class Freezer
 {
-    public static void Freeze(object? v)
+    public static void Freeze(object? v) => Freeze(v, null);
+
+    // Mutable values stop at their Frozen flag; tuples have none, so the tuples already walked are remembered by reference and a
+    // tuple shared many times over (t = (t, t) in a loop) is walked once.
+    internal static void Freeze(object? v, HashSet<object>? seenTuples)
     {
         if (v is Mutable or StarTuple) StackGuard.Check();
         switch (v)
@@ -473,7 +493,10 @@ public static class Freezer
                 h.Freeze();
                 break;
             case StarTuple t:
-                foreach (var x in t.Items) Freeze(x);
+                if (t.Items.Length == 0) break;
+                seenTuples ??= new HashSet<object>(ReferenceEqualityComparer.Instance);
+                if (!seenTuples.Add(t)) break;
+                foreach (var x in t.Items) Freeze(x, seenTuples);
                 break;
             case StarFunction f:
                 f.FreezeContents();
@@ -510,8 +533,22 @@ public sealed class Builtin(string name, Func<Interpreter, IReadOnlyList<object?
     public string Name { get; } = name;
     public string TypeName => "builtin_function_or_method";
 
-    public object? Call(Interpreter interp, IReadOnlyList<object?> args, IReadOnlyList<KeyValuePair<string, object?>> kwargs) =>
-        fn(interp, args, kwargs);
+    /// <remarks>
+    /// The function may be host code (<see cref="Interpreter.Define(string, Func{Interpreter, IReadOnlyList{object?}, IReadOnlyList{KeyValuePair{string, object?}}, object?})"/>,
+    /// or the print sink behind <c>print</c>), so a CLR exception it raises becomes a <see cref="StarlarkException"/> as it
+    /// does for <see cref="Interpreter.Register(string, Delegate, bool, bool)"/>; limits and cancellation pass through.
+    /// </remarks>
+    public object? Call(Interpreter interp, IReadOnlyList<object?> args, IReadOnlyList<KeyValuePair<string, object?>> kwargs)
+    {
+        try
+        {
+            return fn(interp, args, kwargs);
+        }
+        catch (Exception e) when (e is not (StarlarkException or ExecutionLimitException or OperationCanceledException))
+        {
+            throw new StarlarkException($"Host function `{Name}` failed: {e.Message}", e);
+        }
+    }
 }
 
 /// <summary>A method coupled to its receiver, as produced by <c>x.method</c>.</summary>
@@ -538,7 +575,7 @@ public static class Hashing
 {
     public static void CheckHashable(object? v)
     {
-        if (v is StarTuple or StarList or StarStruct or StarRecord) StackGuard.Check();
+        if (v is StarTuple or StarList or StarStruct or StarRecord) StackGuard.CheckNode();
         switch (v)
         {
             case StarList { Frozen: false } or StarDict { Frozen: false } or StarSet { Frozen: false }:
@@ -584,7 +621,7 @@ public static class Hashing
 
     public static int Hash(object? v)
     {
-        if (v is StarTuple or StarList or StarDict or StarSet or StarStruct or StarRecord) StackGuard.Check();
+        if (v is StarTuple or StarList or StarDict or StarSet or StarStruct or StarRecord) StackGuard.CheckNode();
         switch (v)
         {
             case IHostValue h: return h.HashValue();
@@ -745,7 +782,8 @@ public static class Repr
     /// </summary>
     private static string Of(object? v, HashSet<object>? active)
     {
-        StackGuard.Check();
+        if (v is StarTuple or StarList or StarDict or StarSet or StarStruct or StarRecord) StackGuard.CheckNode();
+        else StackGuard.Check();
         return v switch
         {
             IHostValue h => h.Repr(),

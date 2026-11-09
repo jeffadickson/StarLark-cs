@@ -62,7 +62,10 @@ public static partial class StringFormat
             if (i < fmt.Length && (fmt[i] is '-' or '+' or ' ' or '#' or '*' or '.' or (>= '0' and <= '9')))
             {
                 var spec = ParsePercentSpec(fmt, ref i, Operand);
-                sb.Append(ApplyPercent(fmt[i], Operand(), spec));
+                var piece = ApplyPercent(fmt[i], Operand(), spec);
+                // Each field is bounded, but there may be any number of them: check the whole result as it grows.
+                MemoryBudget.CheckString((long)sb.Length + piece.Length);
+                sb.Append(piece);
                 continue;
             }
 
@@ -100,6 +103,7 @@ public static partial class StringFormat
                 default:
                     throw new StarlarkException($"Unknown format specifier '%{fmt[i]}'");
             }
+            MemoryBudget.CheckString(sb.Length);
         }
 
         if (!usedMapping && next < args.Length)
@@ -228,9 +232,12 @@ public static partial class StringFormat
                     "r" => Repr.Of(value),
                     _ => throw new StarlarkException($"Unknown conversion '!{conv}': expected 's' or 'r'"),
                 };
-                sb.Append(formatSpec is null
+                var piece = formatSpec is null
                     ? Repr.Str(conv == "r" ? Repr.Of(value) : value)
-                    : FormatWithSpec(shown, formatSpec));
+                    : FormatWithSpec(shown, formatSpec);
+                // Each field is bounded, but there may be any number of them: check the whole result as it grows.
+                MemoryBudget.CheckString((long)sb.Length + piece.Length);
+                sb.Append(piece);
             }
             else if (c == '}')
             {

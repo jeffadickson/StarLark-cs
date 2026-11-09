@@ -278,10 +278,20 @@ public static class Methods
         {
             var iterable = a.Required("elements");
             a.Done();
-            var parts = Ops.Iterate(iterable).Select(x =>
-                x is string p ? p : throw Err.Param("elements", "string", x)).ToList();
-            MemoryBudget.CheckElements(parts.Sum(p => (long)p.Length) + (long)((string)self).Length * Math.Max(0, parts.Count - 1), 2);
-            return string.Join((string)self, parts);
+            // Every element is a step, and the result is checked as it grows, so neither a long nor a wide join gets past the
+            // limits before it is built.
+            var sep = (string)self;
+            var sb = new StringBuilder();
+            bool first = true;
+            foreach (var x in Ops.IterateStepped(iterable))
+            {
+                if (x is not string p) throw Err.Param("elements", "string", x);
+                MemoryBudget.CheckString((long)sb.Length + p.Length + (first ? 0 : sep.Length));
+                if (!first) sb.Append(sep);
+                sb.Append(p);
+                first = false;
+            }
+            return sb.ToString();
         };
 
         m["split"] = (_, self, a) => Split((string)self, a, right: false);
@@ -396,6 +406,9 @@ public static class Methods
         }
     }
 
+    /// <summary>At most <paramref name="max"/> chars of <paramref name="t"/>, for error messages that quote script values.</summary>
+    internal static string Clip(string t, int max = 64) => t.Length <= max ? t : string.Concat(t.AsSpan(0, max), "...");
+
     private static object Find(string s, ArgReader a, bool last, bool mustExist)
     {
         var sub = StrArg(a, "sub");
@@ -404,7 +417,7 @@ public static class Methods
         int idx = Strings.Search(s, sub, st, en, last, out _);
         if (idx < 0)
         {
-            if (mustExist) throw new StarlarkException($"Substring \"{sub}\" not found in \"{s}\"");
+            if (mustExist) throw new StarlarkException($"Substring \"{Clip(sub)}\" not found in \"{Clip(s)}\"");
             return new BigInteger(-1);
         }
         return new BigInteger(idx);
@@ -457,10 +470,12 @@ public static class Methods
             {
                 int idx = end - sep.Length < 0 ? -1 : s.LastIndexOf(sep, end - 1, end, StringComparison.Ordinal);
                 if (idx < 0) break;
-                parts.Insert(0, s[(idx + sep.Length)..end]);
+                parts.Add(s[(idx + sep.Length)..end]);
                 end = idx;
             }
-            parts.Insert(0, s[..end]);
+            parts.Add(s[..end]);
+            // Built from the right end and reversed once: inserting at the front each time would be quadratic.
+            parts.Reverse();
         }
         return StrList(parts);
     }
@@ -494,13 +509,14 @@ public static class Methods
             if (j <= 0) break;
             if (max >= 0 && result.Count == max)
             {
-                result.Insert(0, s[..j]);
-                return StrList(result);
+                result.Add(s[..j]);
+                break;
             }
             int en = j;
             while (j > 0 && !IsSpace(s[j - 1])) j--;
-            result.Insert(0, s[j..en]);
+            result.Add(s[j..en]);
         }
+        result.Reverse();
         return StrList(result);
     }
 
@@ -568,7 +584,7 @@ public static class Methods
                     return null;
                 }
             }
-            throw new StarlarkException($"Item {Repr.Of(x)} not found in list");
+            throw new StarlarkException($"Item {Methods.Clip(Repr.Of(x))} not found in list");
         };
         m["index"] = (_, self, a) =>
         {
@@ -580,7 +596,7 @@ public static class Methods
             {
                 if (Ops.Equal(l[i], x)) return new BigInteger(i);
             }
-            throw new StarlarkException($"Item {Repr.Of(x)} not found in list");
+            throw new StarlarkException($"Item {Methods.Clip(Repr.Of(x))} not found in list");
         };
     }
 
@@ -617,7 +633,7 @@ public static class Methods
             a.Done();
             if (d.Remove(key, out var v)) return v;
             if (hasDefault) return dflt;
-            throw new StarlarkException($"Key `{Repr.Of(key)}` not found in dictionary");
+            throw new StarlarkException($"Key `{Methods.Clip(Repr.Of(key))}` not found in dictionary");
         };
         m["popitem"] = (_, self, a) =>
         {
@@ -714,7 +730,7 @@ public static class Methods
         {
             var x = a.Required("x");
             a.Done();
-            if (!((StarSet)self).Remove(x)) throw new StarlarkException($"Item {Repr.Of(x)} not found in set");
+            if (!((StarSet)self).Remove(x)) throw new StarlarkException($"Item {Methods.Clip(Repr.Of(x))} not found in set");
             return null;
         };
         m["pop"] = (_, self, a) =>

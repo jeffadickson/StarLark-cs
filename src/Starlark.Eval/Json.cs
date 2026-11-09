@@ -72,6 +72,7 @@ public static class JsonModule
         }
         // The output is one string: keep it within the memory budget as it grows (repeated references can multiply it).
         MemoryBudget.CheckString(sb.Length);
+        ExecutionContext.Current?.Step();
         switch (v)
         {
             case null: sb.Append("null"); return;
@@ -414,6 +415,9 @@ public static class JsonModule
         bool inString = false;
         void NewLine()
         {
+            // Each line adds the prefix and one indent per level: check the total first, so a long indent string cannot
+            // build a result past the memory budget or the string ceiling.
+            MemoryBudget.CheckString((long)sb.Length + 1 + prefix.Length + (long)level * indent.Length);
             sb.Append('\n').Append(prefix);
             for (int i = 0; i < level; i++) sb.Append(indent);
         }
