@@ -182,7 +182,7 @@ public class ReleaseCandidate1Tests
         it.Register("two", () => Task.WhenAll(
             Task.Run(() => throw new InvalidOperationException("first")),
             Task.Run(async () => { await Task.Delay(20); throw new InvalidOperationException("second"); })));
-        Assert.Contains("Host function failed", Fails("two()\n", it));
+        Assert.Contains("Host function `two` failed: first", Fails("two()\n", it));
     }
 
     /// <summary>A timeout of 30 days or TimeSpan.MaxValue does not make a wait throw ArgumentOutOfRangeException.</summary>

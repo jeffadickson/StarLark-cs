@@ -362,11 +362,11 @@ public sealed class Interpreter
     /// <see cref="SynchronizationContext"/> (a UI thread): a task that needs that thread to finish would deadlock.
     /// Run the script on a thread-pool thread instead, for example with <c>Task.Run</c>.
     /// </remarks>
-    internal void AwaitHostTask(Task task)
+    internal void AwaitHostTask(Task task, string? function = null)
     {
+        var ctx = Ctx;
         try
         {
-            var ctx = Ctx;
             if (!ExecutionContext.WaitUntilDeadline(task, ctx.DeadlineTicks, ctx.Token))
             {
                 throw new ExecutionLimitException("time", $"Script exceeded the time limit of {Timeout}");
@@ -376,11 +376,17 @@ public sealed class Interpreter
         {
             // A task can fault with several exceptions (Task.WhenAll); report the first.
             var inner = e.Flatten().InnerExceptions.FirstOrDefault() ?? e;
+            string shown = function is null ? "Host function" : $"Host function `{function}`";
+            // A task cancelled on its own is the host function's failure, not the run's cancellation.
+            if (inner is OperationCanceledException && !ctx.Token.IsCancellationRequested)
+            {
+                throw new StarlarkException($"{shown} was cancelled");
+            }
             if (inner is StarlarkException or ExecutionLimitException or OperationCanceledException)
             {
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(inner).Throw();
             }
-            throw new StarlarkException($"Host function failed: {inner.Message}");
+            throw new StarlarkException($"{shown} failed: {inner.Message}");
         }
     }
 
