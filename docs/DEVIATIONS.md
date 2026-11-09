@@ -80,3 +80,12 @@ limits can end the process.
   `OperationCanceledException`. Neither can be caught by a script. `MaxAllocatedBytes` caps each single string, list,
   tuple or bytes value one operation builds; it does not limit the total memory a run uses, so combine it with
   `MaxSteps`, `Timeout` and a process-level memory cap.
+- A host sequence or dictionary returned to a script is converted one element per step, so an endless or huge
+  `IEnumerable` is stopped by `MaxSteps`, `Timeout`, `Cancellation` or `MaxAllocatedBytes` (about 16 bytes per item),
+  also for an `asFuture` result, whose conversion stops when the run ends.
+- Any exception from a host function, including one raised while its result is converted (a lazy `Select`), reaches
+  the host as `StarlarkException` "Host function `name` failed: ..." in every mode; a host task cancelled while the
+  run was not is "Host function `name` was cancelled".
+- `Expose` throws `ArgumentException` for a class with overloaded methods, a method named like a property, a generic
+  method, or a method with a pointer, by-ref or ref struct parameter or result: rename one with `[Expose("...")]` or
+  mark it `[Hide]`. `[Expose]` and `[Hide]` apply to properties and methods only (fields are never exposed).

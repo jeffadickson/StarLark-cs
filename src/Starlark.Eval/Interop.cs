@@ -49,9 +49,76 @@ public static class Interop
     /// <summary>Converts a CLR value to a Starlark value.</summary>
     /// <param name="value">The value to convert.</param>
     /// <param name="snakeCase">Whether property names of converted objects become snake_case (the default).</param>
-    public static object? ToStar(object? value, bool snakeCase = true) => ToStar(value, snakeCase, 0);
+    /// <remarks>
+    /// Called while a script runs (from a host function), each element of a host sequence or dictionary costs one step,
+    /// so an endless or huge <see cref="IEnumerable"/> is stopped by <see cref="Interpreter.MaxSteps"/>,
+    /// <see cref="Interpreter.Timeout"/>, <see cref="Interpreter.Cancellation"/> and
+    /// <see cref="Interpreter.MaxAllocatedBytes"/> rather than hanging the script thread.
+    /// </remarks>
+    public static object? ToStar(object? value, bool snakeCase = true) =>
+        ToStar(value, snakeCase, 0, ExecutionContext.Current is { } ctx ? Meter.For(ctx) : null);
 
-    private static object? ToStar(object? value, bool snake, int depth)
+    /// <summary>
+    /// Converts a host task's result on the thread that completed it, where no script context is current: the
+    /// conversion is bounded by the run's token (cancelled when the run ends), its deadline, the steps the owner had
+    /// left and the memory ceiling.
+    /// </summary>
+    internal static object? ToStarDetached(object? value, bool snakeCase, ExecutionContext owner, CancellationToken token) =>
+        ToStar(value, snakeCase, 0, Meter.Detached(owner, token));
+
+    /// <summary>
+    /// Bounds the conversion of host sequences: one step per element, checked against the run's limits. Inside a run
+    /// it uses the run's own context; detached (a host future) it keeps its own count against what the owner had left.
+    /// </summary>
+    private sealed class Meter
+    {
+        private ExecutionContext? _ctx;
+        private CancellationToken _token;
+        private long _deadline, _stepsLeft, _maxBytes, _reportedSteps, _count;
+        private TimeSpan? _timeout;
+
+        public static Meter For(ExecutionContext ctx) => new() { _ctx = ctx, _maxBytes = ctx.MaxBytes };
+
+        public static Meter Detached(ExecutionContext owner, CancellationToken token) => new()
+        {
+            _token = token,
+            _deadline = owner.DeadlineTicks,
+            _timeout = owner.Interpreter.Timeout,
+            _stepsLeft = owner.MaxSteps > 0 ? Math.Max(1, owner.MaxSteps - Volatile.Read(ref owner.Steps)) : 0,
+            _reportedSteps = owner.ReportedMaxSteps,
+            _maxBytes = owner.MaxBytes,
+        };
+
+        /// <summary>Accounts for one more element of a collection that now holds <paramref name="size"/> items.</summary>
+        public void Item(long size)
+        {
+            ++_count;
+            // About 16 bytes per slot (a reference plus the converted value's box): an estimate, like the other checks.
+            if (_maxBytes > 0 && size * 16 > _maxBytes)
+            {
+                throw new ExecutionLimitException("memory", $"Host value of {size} items is over the memory limit of {_maxBytes} bytes");
+            }
+            if (_ctx is not null)
+            {
+                _ctx.Step();
+                return;
+            }
+            if (_stepsLeft > 0 && _count > _stepsLeft)
+            {
+                throw new ExecutionLimitException("steps", $"Script exceeded the limit of {_reportedSteps} steps");
+            }
+            if ((_count & 1023) == 0)
+            {
+                _token.ThrowIfCancellationRequested();
+                if (_deadline != 0 && System.Diagnostics.Stopwatch.GetTimestamp() > _deadline)
+                {
+                    throw new ExecutionLimitException("time", $"Script exceeded the time limit of {_timeout}");
+                }
+            }
+        }
+    }
+
+    private static object? ToStar(object? value, bool snake, int depth, Meter? meter)
     {
         if (depth > MaxDepth) throw new StarlarkException("Cannot convert host object: nesting is too deep (cyclic?)");
         switch (value)
@@ -79,23 +146,32 @@ public static class Interop
             case IDictionary dict:
             {
                 var result = new StarDict();
-                foreach (DictionaryEntry kv in dict) result.Set(ToStar(kv.Key, snake, depth + 1), ToStar(kv.Value, snake, depth + 1));
+                long n = 0;
+                foreach (DictionaryEntry kv in dict)
+                {
+                    meter?.Item(++n);
+                    result.Set(ToStar(kv.Key, snake, depth + 1, meter), ToStar(kv.Value, snake, depth + 1, meter));
+                }
                 return result;
             }
             case IEnumerable seq:
             {
                 var items = new List<object?>();
-                foreach (var x in seq) items.Add(ToStar(x, snake, depth + 1));
+                foreach (var x in seq)
+                {
+                    meter?.Item(items.Count + 1);
+                    items.Add(ToStar(x, snake, depth + 1, meter));
+                }
                 return new StarList(items);
             }
         }
         var type = value.GetType();
         if (type.IsGenericType && type.FullName!.StartsWith("System.ValueTuple", StringComparison.Ordinal))
         {
-            return new StarTuple(type.GetFields().Select(f => ToStar(f.GetValue(value), snake, depth + 1)).ToArray());
+            return new StarTuple(type.GetFields().Select(f => ToStar(f.GetValue(value), snake, depth + 1, meter)).ToArray());
         }
         return new StarStruct(ExposedMembers.Properties(type, snake).Select(p =>
-            new KeyValuePair<string, object?>(p.Name, ToStar(p.Property.GetValue(value), snake, depth + 1))));
+            new KeyValuePair<string, object?>(p.Name, ToStar(p.Property.GetValue(value), snake, depth + 1, meter))));
     }
 
     private static IEnumerable<PropertyInfo> Properties(Type type) =>
@@ -220,25 +296,38 @@ public static class Interop
                 if (hostRun is not null)
                 {
                     handedOff = true;   // the future now owns the reserved slot
-                    return hostRun.StartHostFuture(task, () => ToStar(TaskResult(task), snake), running!, shownName);
+                    var owner = running!;
+                    return hostRun.StartHostFuture(task, token => ToStarDetached(TaskResult(task), snake, owner, token), owner, shownName);
                 }
-                interp.AwaitHostTask(task);
+                interp.AwaitHostTask(task, shownName);
                 result = TaskResult(task);
             }
             return ToStar(result, snake);
         }
-        catch (TargetInvocationException e) when (e.InnerException is not null)
+        catch (Exception e) when (e is not (StarlarkException or ExecutionLimitException or OperationCanceledException))
         {
-            if (e.InnerException is StarlarkException or ExecutionLimitException or OperationCanceledException)
-            {
-                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e.InnerException).Throw();
-            }
-            throw new StarlarkException($"Host function `{shownName}` failed: {e.InnerException.Message}");
+            // A host function that throws (wrapped by reflection or not), a lazy result that fails while it is
+            // converted, or a method reflection cannot call: all reach the host as the same StarlarkException.
+            var failure = HostFailure(e, shownName);
+            if (failure == e.InnerException) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+            throw failure;
         }
         finally
         {
             if (reserved && !handedOff) hostRun!.ReleaseHostOperation();
         }
+    }
+
+    /// <summary>
+    /// The error a host sees for a CLR exception raised by host function <paramref name="function"/>: a Starlark,
+    /// limit or cancellation exception inside a reflection wrapper is passed on unchanged, anything else becomes
+    /// <c>Host function `name` failed: message</c>. Shared by direct calls and host futures so both report the same.
+    /// </summary>
+    internal static Exception HostFailure(Exception e, string function)
+    {
+        var inner = e is TargetInvocationException { InnerException: { } x } ? x : e;
+        if (inner is StarlarkException or ExecutionLimitException or OperationCanceledException) return inner;
+        return new StarlarkException($"Host function `{function}` failed: {inner.Message}");
     }
 
     /// <summary>The value a completed task produced, or null for a task without a result.</summary>
@@ -251,6 +340,11 @@ public static class Interop
     /// Exposes a host object to scripts as a struct: public properties become fields (a snapshot taken now) and public
     /// methods become live calls on the object. Names are snake_case unless <paramref name="snakeCase"/> is false.
     /// </summary>
+    /// <exception cref="ArgumentException">
+    /// A visible method is generic or uses a pointer, by-ref or ref struct type, or two visible members (overloads,
+    /// or a method and a property) share a script name: a host programming error, reported before any script runs.
+    /// Rename the member with <see cref="ExposeAttribute"/> or mark it <see cref="HideAttribute"/>.
+    /// </exception>
     public static StarStruct Expose(object target, bool snakeCase = true)
     {
         var fields = new List<KeyValuePair<string, object?>>();

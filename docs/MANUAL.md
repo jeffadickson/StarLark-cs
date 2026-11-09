@@ -164,6 +164,15 @@ var m = it.Execute("t.star", "n = inventory.count('apple')\nwho = inventory.owne
 // m.Globals["n"] is 3; calling inventory.wipe() would be an error
 ```
 
+Overloads are not supported: `Expose` throws `ArgumentException` when two visible members would share a script name,
+or when a visible method is generic or uses a pointer, by-ref or ref struct (`Span<T>`) type. Rename one with
+`[Expose("other_name")]` or mark it `[Hide]`. `[Expose]` and `[Hide]` apply to properties and methods; fields are
+never exposed.
+
+A host function's exception, including one raised while its result is converted, reaches the host as a
+`StarlarkException` naming the function. A sequence it returns is converted one element per step, so an endless
+`IEnumerable` is stopped by the limits of [section 5](#5-running-untrusted-scripts-safely).
+
 **`DefineValue`** predeclares any .NET value, converted to Starlark (lists, dictionaries, records and so on).
 
 Host functions are visible to the static type checker: the C# signature becomes the Starlark signature, so

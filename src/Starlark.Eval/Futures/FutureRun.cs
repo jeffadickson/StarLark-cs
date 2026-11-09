@@ -146,7 +146,8 @@ internal sealed class FutureRun : IDisposable
                 }
                 catch (Exception)
                 {
-                    // RunTask completes the future itself; anything reaching here is already recorded.
+                    // RunTask completes the future itself, even when a bug throws (its finally guarantees an outcome),
+                    // so no waiter is left blocked; the loop must survive to serve the next task.
                 }
             }
         }
@@ -227,6 +228,8 @@ internal sealed class FutureRun : IDisposable
         finally
         {
             Interlocked.Decrement(ref _running);
+            // A bug above (in Complete or its bookkeeping) must not leave a waiter blocked until the deadline.
+            if (!future.IsDone) future.Complete(null, new StarlarkException("Internal error: a task ended without a result"));
         }
     }
 
@@ -309,7 +312,12 @@ internal sealed class FutureRun : IDisposable
     /// Wraps a host task in a future the script can collect. The slot reserved for it is released when the task ends.
     /// The result is converted and frozen on the completing thread, so it can safely cross to the script.
     /// </summary>
-    public StarFuture StartHostFuture(Task task, Func<object?> convert, ExecutionContext owner, string function)
+    /// <remarks>
+    /// <paramref name="convert"/> gets the run's token, cancelled when the run ends, so converting a huge or endless
+    /// result stops with the run. A task cancelled while the run was not is reported as
+    /// <c>Host function `name` was cancelled</c>, the same as a direct call.
+    /// </remarks>
+    public StarFuture StartHostFuture(Task task, Func<CancellationToken, object?> convert, ExecutionContext owner, string function)
     {
         StarFuture future;
         lock (_gate)
@@ -324,25 +332,26 @@ internal sealed class FutureRun : IDisposable
         {
             try
             {
-                if (t.IsCanceled)
+                if (t.IsCanceled || (t.IsFaulted && t.Exception!.GetBaseException() is OperationCanceledException))
                 {
-                    future.Complete(null, new OperationCanceledException(_token));
+                    future.Complete(null, Cancelled(function));
                 }
                 else if (t.IsFaulted)
                 {
-                    var inner = t.Exception!.GetBaseException();
-                    future.Complete(null, inner is StarlarkException or ExecutionLimitException or OperationCanceledException
-                        ? inner
-                        : new StarlarkException($"Host function `{function}` failed: {inner.Message}"));
+                    future.Complete(null, Interop.HostFailure(t.Exception!.GetBaseException(), function));
                 }
                 else
                 {
-                    future.Complete(Isolation.FreezeResult(convert()), null);
+                    future.Complete(Isolation.FreezeResult(convert(_token)), null);
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                future.Complete(null, Cancelled(function));
             }
             catch (Exception e)
             {
-                future.Complete(null, e is StarlarkException ? e : new StarlarkException($"Host function `{function}` failed: {e.Message}"));
+                future.Complete(null, Interop.HostFailure(e, function));
             }
             finally
             {
@@ -351,6 +360,11 @@ internal sealed class FutureRun : IDisposable
         }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
         return future;
     }
+
+    /// <summary>The error for a host task that was cancelled: the run's cancellation if the run was, else a script error.</summary>
+    private Exception Cancelled(string function) => _token.IsCancellationRequested
+        ? new OperationCanceledException(_token)
+        : new StarlarkException($"Host function `{function}` was cancelled");
 
     /// <summary>Marks a future as collected, so it no longer counts against the live-future cap.</summary>
     public void Collected(StarFuture future)
