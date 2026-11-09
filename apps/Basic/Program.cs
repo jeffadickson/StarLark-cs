@@ -46,7 +46,8 @@ public static class Program
         '\n' or '\r' => "\r",
         27 => "\x1b",
         8 or 127 => "\b",
-        _ => char.IsHighSurrogate((char)c) ? ((char)c).ToString() : char.ConvertFromUtf32(c),
+        // Both readers return UTF-16 units, so a character outside the BMP arrives as two keys, one per surrogate.
+        _ => ((char)c).ToString(),
     };
 
     /// <summary>One key from a terminal, without echo and without waiting for Enter. Falls back to the text reader if the console cannot.</summary>
@@ -70,9 +71,9 @@ public static class Program
     }
 
     /// <summary>Runs a machine against <paramref name="input"/>; if <paramref name="source"/> is given it is loaded and RUN first.</summary>
-    public static int Run(TextWriter output, TextReader input, string? source, bool interactive = false)
+    public static int Run(TextWriter output, TextReader input, string? source, bool interactive = false, long maxSteps = 400_000_000)
     {
-        var machine = new Machine { Echo = !interactive };
+        var machine = new Machine(maxSteps) { Echo = !interactive };
         output.Write(machine.TakeOutput());
         output.Flush();
 
@@ -100,10 +101,32 @@ public static class Program
                 return status;
             }
 
+            // Every call into the machine goes through Safe: loading and RUNning a file, a typed line, and a key in the line editor.
+            string Safe(Func<string> step)
+            {
+                try
+                {
+                    return Drive(step());
+                }
+                catch (StarlarkException e)
+                {
+                    // A fault in the interpreter script must not end the session, whatever was typed: say so and return to READY.
+                    output.Write(machine.TakeOutput());
+                    output.WriteLine($"?INTERNAL ERROR: {e.RawMessage}");
+                    return machine.Recover();
+                }
+                catch (ExecutionLimitException e)
+                {
+                    // A program that burns through the step, time or memory budget in one slice is stopped like BREAK, not allowed to end the session.
+                    output.Write(machine.TakeOutput());
+                    output.WriteLine($"BREAK ({e.Limit} limit)");
+                    return machine.Recover();
+                }
+            }
+
             if (source is not null)
             {
-                machine.Load(source);
-                status = Drive(machine.Type("RUN"));
+                status = Safe(() => { machine.Load(source); return machine.Type("RUN"); });
                 output.Write(machine.TakeOutput());
                 output.Flush();
             }
@@ -115,7 +138,7 @@ public static class Program
                     // Piped input has no keystrokes: each character is a key, and the end of the line is Enter.
                     int c = interactive ? ReadKey(input) : input.Read();
                     if (c < 0) break;
-                    machine.Key(KeyName(c));
+                    status = Safe(() => { machine.Key(KeyName(c)); return "done"; });
                     output.Write(machine.TakeOutput());
                     output.Flush();
                     continue;
@@ -123,24 +146,7 @@ public static class Program
                 var line = input.ReadLine();
                 if (line is null) break;
                 Interlocked.Exchange(ref breakRequested, 0);
-                try
-                {
-                    status = Drive(machine.Type(line));
-                }
-                catch (StarlarkException e)
-                {
-                    // A fault in the interpreter script must not end the session, whatever was typed: say so and return to READY.
-                    output.Write(machine.TakeOutput());
-                    output.WriteLine($"?INTERNAL ERROR: {e.RawMessage}");
-                    status = machine.Recover();
-                }
-                catch (ExecutionLimitException e)
-                {
-                    // A program that burns through the step, time or memory budget in one slice is stopped like BREAK, not allowed to end the session.
-                    output.Write(machine.TakeOutput());
-                    output.WriteLine($"BREAK ({e.Limit} limit)");
-                    status = machine.Recover();
-                }
+                status = Safe(() => machine.Type(line));
                 output.Write(machine.TakeOutput());
                 output.Flush();
             }

@@ -30,6 +30,8 @@
     <ProjectReference Include="..\..\apps\ReportPipeline\ReportPipeline.csproj" />
     <ProjectReference Include="..\..\apps\ConfigInspector\ConfigInspector.csproj" />
     <ProjectReference Include="..\..\apps\Examples\Examples.csproj" />
+    <ProjectReference Include="..\..\tools\CommentCheck\CommentCheck.csproj" />
+    <ProjectReference Include="..\..\tools\Serve\Serve.csproj" />
   </ItemGroup>
 
 </Project>
