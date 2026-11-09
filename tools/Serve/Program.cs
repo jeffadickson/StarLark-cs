@@ -9,7 +9,12 @@ using Microsoft.Extensions.FileProviders;
 // framework files) and no caching, so a rebuilt playground is always picked up.
 
 string folder = Path.GetFullPath(args.Length > 0 ? args[0] : ".");
-int port = args.Length > 1 && int.TryParse(args[1], out var p) ? p : 8765;
+int port = 8765;
+if (args.Length > 1 && !(int.TryParse(args[1], out port) && port is >= 1 and <= 65535))
+{
+    Console.Error.WriteLine("usage: Serve <folder> [port]   (port must be a number from 1 to 65535)");
+    return 2;
+}
 if (!Directory.Exists(folder)) { Console.Error.WriteLine($"no such folder: {folder}"); return 2; }
 
 var builder = WebApplication.CreateBuilder();

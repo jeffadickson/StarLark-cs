@@ -8,7 +8,8 @@ using Starlark.Syntax;
 //
 // "same" parses both versions with the library's own parser and compares the printed programs. A comment never reaches the program
 // tree, so a change that only adds, removes or rewrites comments gives identical text, and any change to code, a string, a name or the
-// order of statements gives different text. Exit code 1 means a difference (or an undocumented function in "coverage" mode).
+// order of statements gives different text. Exit code 1 means a difference (or an undocumented function in "coverage" mode); exit code 2
+// means bad arguments or a version git could not show.
 
 if (args.Length < 2) { Console.Error.WriteLine("usage: CommentCheck same <git-ref> <file>... | coverage <file>..."); return 2; }
 var dialect = Dialect.AllOptionsInternal with { EnableFutures = true, EnableTopLevelStmt = true };
@@ -19,7 +20,8 @@ if (args[0] == "same")
     string gitRef = args[1];
     foreach (var path in args.Skip(2))
     {
-        string oldText = Git(gitRef, path);
+        string? oldText = Git(gitRef, path);
+        if (oldText is null) return 2;
         string newText = File.ReadAllText(path);
         string a = Printed(path, oldText), b = Printed(path, newText);
         if (a == b)
@@ -88,19 +90,31 @@ string Printed(string path, string text)
 static bool IsComment(string line) => line.TrimStart().StartsWith('#');
 static int Comments(string text) => text.Split('\n').Count(IsComment);
 
-static string Git(string gitRef, string path)
+// The file at <gitRef>, or null (after saying why on stderr) if git cannot show it: a bad ref or path is an error, not an empty old version.
+static string? Git(string gitRef, string path)
 {
-    // git wants forward slashes in a path inside a commit, and a path relative to the repository root.
+    // git wants forward slashes in a path inside a commit, and a path relative to the repository root. ArgumentList passes the
+    // argument as one, so a path with a space works.
     // Read git's output as UTF-8. Without this the process uses the console's code page and any non-ASCII character in the old version is
     // decoded wrongly, which showed up as a false "different" on a file containing the half-block character.
-    var psi = new ProcessStartInfo("git", $"show {gitRef}:{path.Replace(Path.DirectorySeparatorChar, '/')}")
+    var psi = new ProcessStartInfo("git")
     {
         RedirectStandardOutput = true,
         RedirectStandardError = true,
         StandardOutputEncoding = System.Text.Encoding.UTF8,
     };
+    psi.ArgumentList.Add("show");
+    psi.ArgumentList.Add($"{gitRef}:{path.Replace(Path.DirectorySeparatorChar, '/')}");
     using var p = Process.Start(psi)!;
+    // stderr is read at the same time, so a lot of it cannot fill the pipe and block git.
+    var errTask = p.StandardError.ReadToEndAsync();
     string o = p.StandardOutput.ReadToEnd();
     p.WaitForExit();
-    return p.ExitCode == 0 ? o : "";
+    string err = errTask.Result;
+    if (p.ExitCode != 0)
+    {
+        Console.Error.WriteLine($"git show failed for {path}: {err.Trim()}");
+        return null;
+    }
+    return o;
 }
