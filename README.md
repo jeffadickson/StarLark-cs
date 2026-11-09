@@ -1,6 +1,6 @@
 # Starlark for .NET
 
-`starlark-cs` is an implementation of the [Starlark](https://github.com/bazelbuild/starlark) language in C# for .NET 10.
+`starlark-cs` is an implementation of the [Starlark](https://github.com/bazelbuild/starlark) language in C# for .NET 11.
 Starlark is a small, Python-like language for configuration and for extending applications: deterministic, hermetic,
 and safe to run code you did not write.
 

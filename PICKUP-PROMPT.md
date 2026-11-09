@@ -4,7 +4,7 @@ Paste this into a new session opened in `C:\Users\dickson\dev\starlark-cs`.
 
 ---
 
-You are continuing work on a C# (net10.0) implementation of the Starlark language: `Starlark.Syntax` (port of the
+You are continuing work on a C# (net11.0) implementation of the Starlark language: `Starlark.Syntax` (port of the
 starlark-rust lexer/parser) and `Starlark.Eval` (a tree-walking interpreter written from the spec). It was moved on 2026-11-02
 from `dev\clipforge\starlark-cs` to `dev\starlark-cs`. It is a git repo (branch `main`) with a GitHub remote,
 https://github.com/jeffadickson/StarLark-cs. Do not push without the user saying so.

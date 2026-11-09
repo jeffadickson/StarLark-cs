@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
@@ -29,6 +29,7 @@
     <ProjectReference Include="..\..\apps\GameAI\GameAI.csproj" />
     <ProjectReference Include="..\..\apps\ReportPipeline\ReportPipeline.csproj" />
     <ProjectReference Include="..\..\apps\ConfigInspector\ConfigInspector.csproj" />
+    <ProjectReference Include="..\..\apps\Examples\Examples.csproj" />
   </ItemGroup>
 
 </Project>

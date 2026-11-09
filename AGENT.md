@@ -8,7 +8,7 @@ in doubt, the files win.
 
 ## 1. What this is
 
-A C# (net10.0) implementation of the Starlark language, split into two libraries:
+A C# (net11.0) implementation of the Starlark language, split into two libraries:
 
 - `src/Starlark.Syntax` (14 .cs files): a port of the starlark-rust lexer, parser, AST, dialects, validation and
   lint suppressions (`Lexer.cs`, `RawLexer.cs`, `Parser.cs`, `Ast.cs`, `AstModule.cs`, `Dialect.cs`, `Validation.cs`,
