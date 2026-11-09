@@ -92,12 +92,24 @@ public static partial class Playground
 
     private static Basic.Machine? _basic;
 
+    /// <summary>An error from <see cref="BasicLoad"/>, which returns only the listing, waiting to be shown with the next output.</summary>
+    private static string _pending = "";
+
     /// <summary>Starts (or restarts) the BASIC machine and returns its banner.</summary>
     [JSExport]
     public static string BasicReset()
     {
-        _basic = new Basic.Machine();
-        return _basic.TakeOutput();
+        // Every call into the machine is guarded like Step, so no exception reaches the JavaScript interop.
+        try
+        {
+            _basic = new Basic.Machine();
+            return _basic.TakeOutput();
+        }
+        catch (Exception e)
+        {
+            _basic = null;
+            return "?INTERNAL ERROR: " + e.Message + "\n";
+        }
     }
 
     /// <summary>Types one line into the BASIC machine. Returns JSON <c>{"output": text, "status": "done"|"waiting"|"budget"}</c>.</summary>
@@ -116,10 +128,20 @@ public static partial class Playground
     [JSExport]
     public static string BasicLoad(string name)
     {
-        _basic = new Basic.Machine();
-        _basic.TakeOutput();
         var text = Basic.Scripts.ReadProgram(name) ?? "";
-        _basic.Load(text);
+        try
+        {
+            _basic = new Basic.Machine();
+            _basic.TakeOutput();
+            _basic.Load(text);
+        }
+        catch (Exception e)
+        {
+            // The listing is still returned; the error is shown with the next output (see Step), and the machine is recovered, or dropped
+            // if it could not even be built, so the next line starts clean.
+            _pending = "?INTERNAL ERROR: " + e.Message + "\n";
+            try { _basic?.Recover(); } catch (Exception) { _basic = null; }
+        }
         return text;
     }
 
@@ -134,6 +156,8 @@ public static partial class Playground
     /// </summary>
     private static string Step(Func<string> start)
     {
+        string pending = _pending;
+        _pending = "";
         string status;
         try
         {
@@ -144,9 +168,9 @@ public static partial class Playground
         catch (Exception e)
         {
             _basic!.Recover();
-            return "{\"output\":" + Json("?INTERNAL ERROR: " + e.Message + "\n" + _basic.TakeOutput()) + ",\"status\":\"done\"}";
+            return "{\"output\":" + Json(pending + "?INTERNAL ERROR: " + e.Message + "\n" + _basic.TakeOutput()) + ",\"status\":\"done\"}";
         }
-        return "{\"output\":" + Json(_basic!.TakeOutput()) + ",\"status\":\"" + status + "\"}";
+        return "{\"output\":" + Json(pending + _basic!.TakeOutput()) + ",\"status\":\"" + status + "\"}";
     }
 
     /// <summary>

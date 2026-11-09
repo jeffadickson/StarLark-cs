@@ -70,8 +70,11 @@ public readonly struct TokenInt : IEquatable<TokenInt>
 
     public bool IsI32 => Value >= int.MinValue && Value <= int.MaxValue;
 
-    /// <summary>Parse unsigned digits in the given radix (2..16).</summary>
-    public static TokenInt FromStrRadix(string digits, int radix)
+    /// <summary>
+    /// Parse unsigned digits in the given radix (2..16). Internal because it throws <see cref="FormatException"/>: a host must only
+    /// ever see <see cref="StarlarkSyntaxException"/> for a bad literal, which the lexer reports itself.
+    /// </summary>
+    internal static TokenInt FromStrRadix(string digits, int radix)
     {
         if (digits.Length == 0)
         {

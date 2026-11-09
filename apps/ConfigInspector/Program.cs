@@ -29,7 +29,13 @@ public static class Program
     {
         var file = env + ".star";
         var interp = New();
-        var check = interp.Typecheck(file, Scripts.Read(file)!);
+        var src = Scripts.Read(file);
+        if (src is null)
+        {
+            output.WriteLine($"no such environment: {env}");
+            return null;
+        }
+        var check = interp.Typecheck(file, src);
         if (!check.Ok)
         {
             foreach (var d in check.Errors) output.WriteLine(d.Render().TrimEnd());
@@ -37,7 +43,7 @@ public static class Program
         }
         try
         {
-            var module = interp.Execute(file, Scripts.Read(file)!);
+            var module = interp.Execute(file, src);
             return (AppConfig)Interop.FromStar(module.Globals["config"], typeof(AppConfig))!;
         }
         catch (StarlarkException e)
