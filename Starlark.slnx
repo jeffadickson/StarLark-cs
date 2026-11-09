@@ -20,6 +20,7 @@
     <Project Path="apps/ParallelBuilds/ParallelBuilds.csproj" />
     <Project Path="apps/RayTracer/RayTracer.csproj" />
     <Project Path="apps/ReportPipeline/ReportPipeline.csproj" />
+    <Project Path="apps/Examples/Examples.csproj" />
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/CoverageReport/CoverageReport.csproj" />

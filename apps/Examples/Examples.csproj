@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Three worked examples of embedding Starlark in a C# program: pricing, config and webhooks. Run this project with one of
+       those names as its argument, or with no argument to run all three. Each is also run by tests/Starlark.Apps.Tests/ExamplesTests.cs. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Examples</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Starlark.Eval\Starlark.Eval.csproj" />
+    <ProjectReference Include="..\..\src\Starlark.Syntax\Starlark.Syntax.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="scripts\**\*.star" LogicalName="scripts/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

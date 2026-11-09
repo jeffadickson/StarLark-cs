@@ -39,7 +39,7 @@ build files. The language guarantees properties that make it safe to run code yo
   share a loaded module safely.
 - **No recursion, no `while`.** Every loop iterates over something finite, which makes runaway programs easy to bound.
 
-`starlark-cs` implements the [Starlark specification](spec/spec.md) in C# for .NET 10. It passes the official
+`starlark-cs` implements the [Starlark specification](spec/spec.md) in C# for .NET 11. It passes the official
 conformance data of the Go, Java and Rust implementations (with the wording differences recorded in the test harness).
 
 ## 2. Getting started
@@ -426,10 +426,23 @@ programs (futures, recursion limits, the type checker, BASIC) and must report `A
 
 ## 13. The sample applications
 
-`apps/` holds ten programs that show embedding patterns. Each is run by a test (`tests/Starlark.Apps.Tests`).
+`apps/` holds eleven programs that show embedding patterns. Each is run by a test (`tests/Starlark.Apps.Tests`).
+
+Start with `apps/Examples`, three complete, production-shaped embeddings in a few hundred lines of C# each. In all three, every
+failure (a script that does not parse, a type error, a runtime error, a budget running out) comes back as a value the host
+handles in one place; no exception from a script reaches the caller.
+
+| Example | The host | What Starlark gives it |
+|---|---|---|
+| `Pricing.cs` | A multi-tenant service where each tenant uploads `price(order, customer)`. | Rules a tenant can change without a deploy. Scripts are type checked against the host's C# signatures at upload, so a typo is rejected then and not at a customer's checkout. Budgets stop a runaway script without slowing other tenants, and a frozen module serves many request threads at once. |
+| `Config.cs` | A deployment tool that reads `staging.star` and `production.star` into typed C# records. | Configuration as code with shared defaults through `load()`. It is hermetic: no disk, environment, network or clock, so the same files always deploy the same thing. `load()` cannot reach outside the configuration folder, and the host validates the result and reports every problem in one pass. |
+| `Webhooks.cs` | An automation service that runs user rules on incoming events. | User rules that start slow lookups as futures and wait for them together, so they overlap. Rules only record intentions with `act()`; the host applies them after the rule succeeds, so a failing rule changes nothing and does not stop the others. |
+
+Run them with `dotnet run --project apps/Examples`, or name one: `pricing`, `config` or `webhooks`.
 
 | App | Shows |
 |---|---|
+| `Examples` | The three embeddings above. |
 | `BuildRules` | A Bazel-like rule engine: targets, dependency order, cycle errors with source locations. |
 | `PolicyEngine` | Business rules in scripts, step limits, a static type check before running. |
 | `ConfigInspector` | Configuration files validated by the checker, with a CI-style exit code. |

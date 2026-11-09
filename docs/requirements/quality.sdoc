@@ -63,7 +63,7 @@ Each sample application (Adventure, BuildRules, ConfigInspector, GameAI, Mandelb
 ReportPipeline) shall be run by a test that asserts on its key output, and the Level II BASIC interpreter written in
 Starlark shall be tested for its statements, DATA/READ, the EDIT command, non-ASCII text and the SIN demonstration program.
 <<<
-VERIFICATION: AppTests, BasicTests, BasicExprTests, BasicDataTests, BasicEditTests, BasicNonAsciiTests, BasicSineTests
+VERIFICATION: AppTests, ExamplesTests, BasicTests, BasicExprTests, BasicDataTests, BasicEditTests, BasicNonAsciiTests, BasicSineTests
 
 [REQUIREMENT]
 UID: QA-TST-003
