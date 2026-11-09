@@ -49,6 +49,13 @@ limits can end the process.
 | JSON encoding depth | 128 | "Value is nested too deeply to serialize to JSON" | Go: no depth limit, a cycle is an error. |
 | Host conversion depth | 32 levels from a host object into a script, 200 from a script value out to a host | "...: nesting is too deep (cyclic?)" | Go has no reflection-based conversion. |
 | Expanding an iterable (`Ops.MaxMaterialized`) | 100,000,000 elements | "Cannot expand ... elements: the limit is 100000000" | Go: none. |
+| Growing a list (`append`, `extend`, `insert`, `+=`) | 100,000,000 elements, and `MaxAllocatedBytes` | "List would have N elements: the limit is 100000000" | Go: none. |
+| Concatenation (`+` of bytes, tuples, lists, strings, utf16) | fewer than 2^30 elements (strings: `MaxStringChars`), and `MaxAllocatedBytes` | "Excessive concatenation: ..." or "String result is too large" | Go: none for `+`. The same ceiling as repetition. |
+| Depth of `load()` chains (`Interpreter.MaxLoadDepth`) | 200 modules, or less if the thread's stack runs short | "load() nesting exceeds 200 modules or the thread's stack (module `m`)" | Go: none (its stacks grow). |
+| Types built at runtime (`Ty.MaxRuntimeDepth`, `Ty.MaxRuntimeSize`) | 1024 levels, 2^20 parts | "Type is nested too deeply: ..." / "Type is too large: ..." | Go has no types. The deepest annotation the parser accepts still works. |
+| Types the checker infers | deeper than 16 levels, larger than 4096 parts or unions of more than 32 options become `typing.Any` | none: the checker reports nothing it cannot prove | The Rust crate widens in a similar way. Keeps checking linear for `x = [x]` repeated. |
+| Type checking | `Timeout` and `Cancellation` apply, as to a run | `ExecutionLimitException` "time"; `OperationCanceledException` | Go has no checker. With `TypecheckBeforeExecute` the check and the run each get the full timeout. |
+| Error messages that quote a value (`index`, `remove`, missing dict key) | 64 chars of the value, then `...` | "Substring \"aaa...\" not found in ..." | Go quotes the whole value. |
 | Steps (`Interpreter.MaxSteps`) | none by default | `ExecutionLimitException` "steps" | Go's `Thread.SetMaxExecutionSteps`. |
 | Time, cancellation (`Timeout`, `Cancellation`) | none by default | `ExecutionLimitException` "time"; `OperationCanceledException` | Go's `Thread.Cancel`. |
 | Largest single object (`MaxAllocatedBytes`) | none by default | `ExecutionLimitException` "memory" | Go has none. Usually stricter than the repetition ceiling. |

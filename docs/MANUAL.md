@@ -203,7 +203,8 @@ catch (ExecutionLimitException e)
 ```
 
 `MaxAllocatedBytes` is a per-allocation cap, not a total: it is checked before one operation (repetition, concatenation,
-`join`) builds a string, list, tuple or bytes value larger than the limit. It does not bound the sum of all a run
+`join`, formatting, `json.indent`, growing a list with `append` or `extend`) builds a string, list, tuple or bytes value
+larger than the limit. It does not bound the sum of all a run
 allocates, so a script can still use a lot of memory in many smaller pieces; combine it with `MaxSteps`, `Timeout` and a
 process-level memory cap.
 
@@ -490,10 +491,10 @@ only), `MutantReport` (summarises Stryker.NET mutation runs), `PrettyPrint`, `Se
 |---|---|---|
 | `Dialect` | `Dialect.Standard` | Language features (section 7). |
 | `Print` | `Console.WriteLine` | Where `print()` goes. |
-| `SourceLoader` | none | Resolves `load()` names to source text. |
+| `SourceLoader` | none | Resolves `load()` names to source text; a chain of loads may be at most `MaxLoadDepth` (200) modules deep. |
 | `MaxSteps` | 0 (none) | Step budget per run. |
-| `Timeout` | none | Wall-clock budget per run. |
-| `Cancellation` | none | Host cancellation token. |
+| `Timeout` | none | Wall-clock budget per run; also bounds `Typecheck`. |
+| `Cancellation` | none | Host cancellation token; also stops `Typecheck`. |
 | `MaxAllocatedBytes` | 0 (none) | Largest single string, list, tuple or bytes one operation may build; not a total. |
 | `MaxCallDepth` | 150 (1000 with recursion) | Nested calls before "Maximum call depth exceeded" ("Starlark stack overflow" with recursion); the thread's remaining stack can end a run sooner. |
 | `ScriptStackSize` | 0 (caller's thread) | Bytes of stack for a dedicated thread each run uses, for deep recursion; ignored in the browser. |
