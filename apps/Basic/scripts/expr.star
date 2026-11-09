@@ -1008,13 +1008,13 @@ def eval_rpn(st, rpn):
     # The step bound was used up without finishing.
     return (None, "OM")
 
-# The cache st["rpn"] is keyed by line * 4096 + token position (this assumes positions stay under 4096), and holds the whole result of
+# The cache st["rpn"] is keyed by the (line, token position) tuple, so lines of any length never share a key, and holds the whole result of
 # compile_expr (rpn, next position, error). basic.star replaces it with an empty dict whenever the program text changes.
 # Compile (with a cache for program lines) and evaluate the expression at toks[pos]. Returns (value, next position, error).
 def eval_at(st, toks, pos):
     # The BASIC line number being run, or 0 in immediate mode (a command typed without a line number).
     line = st["line"]
-    cache_key = line * 4096 + pos
+    cache_key = (line, pos)
     hit = None
     # Only program lines are cached. In immediate mode st["line"] is 0, so the key would depend on the token position alone and could collide between different commands.
     if line > 0:

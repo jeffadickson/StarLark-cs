@@ -64,9 +64,9 @@ def new_state():
         "index": {},            # line number -> position in order
         "dirty": False,         # order/index need rebuilding
         "tokcache": {},         # line -> (tokens, error)
-        # Compiled expressions (see eval_at in expr.star), keyed by line * 4096 + token position so the same expression is compiled only once per line. Any
+        # Compiled expressions (see eval_at in expr.star), keyed by the (line, token position) pair so the same expression is compiled only once per line. Any
         # edit of any line empties the whole dict, because the keys depend on token positions.
-        "rpn": {},              # compiled expressions, keyed by line * 4096 + token position
+        "rpn": {},              # compiled expressions, keyed by (line, token position)
         # Variables: `vars` maps a key from var_key (name plus type suffix, for example "A!" or "N$") to its value. `arrays` maps the same sort of key to
         # [dims, flat list of elements] (see new_array/locate). `fns` maps a DEF FN function name to (list of parameter keys, compiled expression).
         "vars": {}, "arrays": {}, "fns": {},
@@ -795,12 +795,14 @@ def st_on(st, toks, pos):
         return "FC"
     if sel[0] == 0 or sel[0] > len(lines):
         return done_stmt(st, toks, p)
-    # Pick the line (selector 1 is the first). For GOSUB push the return point first: the same line and the position after the whole list. Unlike
-    # GOSUB, this does not check the 400-entry limit.
+    # Pick the line (selector 1 is the first). For GOSUB push the return point first: the same line and the position after the whole list. As for
+    # GOSUB, the stack is capped at 400 return points and deeper is "OM".
     target = lines[sel[0] - 1]
     if sub:
         if target not in st["program"]:
             return "UL"
+        if len(st["gosub"]) >= 400:
+            return "OM"
         st["gosub"].append((st["line"], p))
     return jump_to(st, target)
 
@@ -1483,14 +1485,17 @@ def enter_line(st, text):
     # k is the number of leading digits. If there are any, this is a program line, not a command.
     k = span_digits(s, 0)
     if k > 0:
-        num = int(s[:k])
+        # Leading zeros are dropped first, and more than five digits left is too large without calling int(), which fails on a digit run
+        # thousands long.
+        digits = s[:k].lstrip("0")
         rest = s[k:].lstrip()
         # 65529 is the highest line number accepted. A larger one is a syntax error reported in direct mode (line 0, so no "IN" part).
-        if num > 65529:
+        if len(digits) > 5 or (digits != "" and int(digits) > 65529):
             st["direct"] = ([], "")
             st["line"] = 0
             handle_error(st, "SN")
             return
+        num = int(digits) if digits != "" else 0
         # A line number alone deletes that line. Otherwise the text after the number is stored. Either way drop its cached tokens.
         if rest == "":
             st["program"].pop(num, None)
