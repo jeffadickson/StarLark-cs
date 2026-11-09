@@ -105,7 +105,18 @@ public sealed class Lexer
     private Lexeme ErrNow(Func<string, string> message) =>
         ErrSpan(message(_raw.Slice), _raw.TokStart, _raw.TokEnd);
 
-    private static string MsgInvalidInput(string s) => $"Parse error: invalid input `{s}`";
+    // A character that would not print (a control character, a lone surrogate, a BOM) is shown as \u{hex}, so the message stays
+    // readable and valid UTF-16.
+    private static string MsgInvalidInput(string s)
+    {
+        var sb = new StringBuilder();
+        foreach (char ch in s)
+        {
+            if (char.IsControl(ch) || char.IsSurrogate(ch) || ch == 0xFEFF) sb.Append($"\\u{{{(int)ch:x}}}");
+            else sb.Append(ch);
+        }
+        return $"Parse error: invalid input `{sb}`";
+    }
     private static string MsgReserved(string s) => $"Parse error: cannot use reserved keyword `{s}`";
     private static string MsgStartsZero(string s) => $"Parse error: integer cannot have leading 0, got `{s}`";
     private static string MsgIntParse(string s) => $"Parse error: failed to parse integer: `{s}`";
@@ -668,9 +679,11 @@ public sealed class Lexer
             if (AtFStringExprTopLevel && _raw.TokEnd < _codemap.Source.Length && _codemap.Source[_raw.TokEnd] == ':')
             {
                 int colon = _raw.TokEnd;
-                int end = _codemap.Source.IndexOf('}', colon + 1);
-                int quote = _codemap.Source.IndexOfAny([(char)10, (char)13, QuoteChar(_fstrings[^1].Quote)], colon + 1);
-                if (end < 0 || (quote >= 0 && quote < end))
+                // One search that stops at the first '}', line break or quote, so it never runs past the current field (a search for
+                // the quote alone ran to the end of the f-string for every spec, which made many specs quadratic).
+                int rel = _codemap.Source.AsSpan(colon + 1).IndexOfAny(['}', (char)10, (char)13, QuoteChar(_fstrings[^1].Quote)]);
+                int end = rel < 0 ? -1 : colon + 1 + rel;
+                if (end < 0 || _codemap.Source[end] != '}')
                 {
                     _raw.Bump(1);   // step past the colon, or the same error would be produced forever
                     return ErrSpan("f-string format spec is not closed by '}'", colon, Math.Min(_codemap.Source.Length, colon + 1));
@@ -818,14 +831,14 @@ public sealed class Lexer
                 {
                     _fstrings[^1].BraceDepth--;
                 }
-                _parens--;
+                if (_parens > 0) _parens--;   // a stray closing bracket must not stop newlines and indentation
                 return Wrap(token);
             case TokenKind.ClosingRound:
-                _parens--;
+                if (_parens > 0) _parens--;
                 TrackFString(s => s.ParenDepth = Math.Max(0, s.ParenDepth - 1));
                 return Wrap(token);
             case TokenKind.ClosingSquare:
-                _parens--;
+                if (_parens > 0) _parens--;
                 TrackFString(s => s.BracketDepth = Math.Max(0, s.BracketDepth - 1));
                 return Wrap(token);
             default:
@@ -963,9 +976,12 @@ public sealed class Lexer
             else if (c == '\\' && !raw)
             {
                 quoteCount = 0;
+                // The same message and span as a bad escape in an ordinary string.
+                int pos = it.Pos;
                 if (!Escape(it, text))
                 {
-                    return ErrSpan(MsgBadEscape("\\"), start + it.Pos - 1, start + it.Pos);
+                    string bad = _codemap.Source.Substring(start + pos, it.Pos - pos);
+                    return ErrSpan(bad.Length == 0 ? MsgEmptyEscape : MsgBadEscape(bad), start + pos - 1, start + it.Pos);
                 }
             }
             else if (c == '\\')
