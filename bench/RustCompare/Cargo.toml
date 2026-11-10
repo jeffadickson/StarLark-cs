@@ -1,0 +1,18 @@
+[package]
+name = "rust_compare"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Stand-alone: not part of any workspace.
+[workspace]
+
+[dependencies]
+# Path to the read-only starlark-rust checkout; override with a [patch] or edit if yours is elsewhere.
+starlark = { path = "C:/Users/dickson/dev/starlark-rust-src/starlark-rust-main/starlark" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = false
